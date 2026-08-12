@@ -22,6 +22,12 @@ int main() {
         std::cerr << "Failed to create consumer: " << errstr << std::endl;
         return 1;
     }
+
+    RdKafka::Producer *producer = RdKafka::Producer::create(conf, errstr);
+    if (!producer){
+        std::cerr << "Failed to create producer" << errstr << std::endl;
+        return 1;
+    }
     delete conf;
 
     std::vector<std::string> topics = { topic_name };
@@ -50,6 +56,28 @@ int main() {
                 std::cout << "[Processed] " << symbol 
                           << " | Stock: " << price 
                           << " -> Option Price: " << option_price << std::endl;
+
+
+                json result_msg;
+                result_msg["symbol"] = symbol;
+                result_msg["underlying_price"] = price;
+                result_msg["option_price"] = option_price;
+
+                std::string result_str = result_msg.dump();
+
+                RdKafka::ErrorCode produce_err = producer->produce(
+                    "pricing_results",
+                    RdKafka::Topic::PARTITION_UA,
+                    RdKafka::Producer::RK_MSG_COPY,
+                    const_cast<char*>(result_str.c_str()), result_str.size(),
+                    NULL, 0, 0, NULL, NULL
+                );
+
+                if (produce_err != RdKafka::ERR_NO_ERROR) {
+                    std::cerr << "Failed to produce to topic: " << RdKafka::err2str(produce_err) << std::endl;
+                }
+
+                producer->poll(0);
             } 
             catch (const json::parse_error& e) {
                 std::cerr << "JSON Parse Error: " << e.what() << std::endl;
@@ -64,5 +92,8 @@ int main() {
 
     consumer->close();
     delete consumer;
+
+    producer->flush(5000);
+    delete producer;
     return 0;
 }
