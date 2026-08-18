@@ -1,65 +1,75 @@
-import { useState, useEffect } from 'react';
-import './App.css';
+import React, { useState, useEffect } from 'react';
+import type { PricingData, ConnectionState, TabView } from './types';
+import { Header } from './components/Header';
+import { LiveDashboard } from './components/LiveDashboard';
+import './styles/fintech-theme.css';
 
-interface Asset {
-  symbol: string;
-  price: number;
-}
-
-function App() {
-  const [asset, setAsset] = useState<Asset>({
-    symbol: 'BTCUSDT',
-    price: 0
+const App: React.FC = () => {
+  const [activeTab, setActiveTab] = useState<TabView>('LIVE_DASHBOARD');
+  const [marketData, setMarketData] = useState<Record<string, PricingData>>({});
+  const [selectedSymbol, setSelectedSymbol] = useState<string>('');
+  const [connection, setConnection] = useState<ConnectionState>({
+    isConnected: false,
+    isConnecting: true,
+    error: null,
   });
 
-  const [isConnected, setIsConnected] = useState<boolean>(false);
-
+  // 1. WebSocket Connection - Runs EXACTLY once on mount
   useEffect(() => {
-    const ws = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');
+    const ws = new WebSocket('ws://localhost:8000/ws');
 
-    ws.onopen = () => {
-      setIsConnected(true);
-    };
+    ws.onopen = () => setConnection({ isConnected: true, isConnecting: false, error: null });
 
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      setAsset({
-        symbol: data.s,
-        price: parseFloat(data.p)
-      });
-    };
-
-    ws.onerror = (error) => {
-      console.error("WebSocket Error:", error);
-    };
-
-    ws.onclose = () => {
-      setIsConnected(false);
-    };
-
-    return () => {
-      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-        ws.close();
+    ws.onmessage = (event: MessageEvent) => {
+      try {
+        const incomingData: PricingData = JSON.parse(event.data);
+        setMarketData((prev) => ({
+          ...prev,
+          [incomingData.symbol]: incomingData,
+        }));
+      } catch (error) {
+        console.error('Data parse error:', error);
       }
     };
-  }, []);
+
+    ws.onclose = () => setConnection({ isConnected: false, isConnecting: false, error: 'Disconnected' });
+
+    return () => ws.close();
+  }, []); // <-- Empty dependency array prevents reconnects!
+
+  // 2. Auto-select the first symbol if none is selected
+  useEffect(() => {
+    if (!selectedSymbol) {
+      const symbols = Object.keys(marketData);
+      if (symbols.length > 0) {
+        setSelectedSymbol(symbols[0]);
+      }
+    }
+  }, [marketData, selectedSymbol]);
 
   return (
-    <div className="dashboard-container">
-      <h1>לוח בקרה פיננסי בזמן אמת</h1>
-      
-      <div style={{ color: isConnected ? '#4caf50' : '#f44336', marginBottom: '20px' }}>
-        {isConnected ? '● מחובר לזרם הנתונים' : '○ ממתין לחיבור...'}
-      </div>
+    <div className="app-container">
+      <Header 
+        activeTab={activeTab} 
+        onTabChange={setActiveTab} 
+        connectionStatus={connection} 
+      />
 
-      <div className="ticker-card">
-        <h2>{asset.symbol}</h2>
-        <p className="price">
-          {asset.price > 0 ? `$${asset.price.toFixed(2)}` : 'טוען...'}
-        </p>
-      </div>
+      <main className="workspace">
+        <div key={activeTab} className="tab-transition-wrapper">
+          {activeTab === 'LIVE_DASHBOARD' ? (
+            <LiveDashboard 
+              marketData={marketData} 
+              selectedSymbol={selectedSymbol}
+              onSelectSymbol={setSelectedSymbol}
+            />
+          ) : (
+            <div className="empty-state">Forecasting Models Module - Offline</div>
+          )}
+        </div>
+      </main>
     </div>
   );
-}
+};
 
 export default App;

@@ -1,0 +1,362 @@
+:root {
+  /* Strict Dark Mode Palette */
+  --bg-base: #0a0a0a;
+  --bg-panel: #141414;
+  --bg-panel-hover: #1f1f1f;
+  --border-subtle: #262626;
+  --text-primary: #e5e5e5;
+  --text-secondary: #a3a3a3;
+  
+  /* Financial Indicators */
+  --trade-up-bg: rgba(34, 197, 94, 0.15);
+  --trade-up-text: #4ade80;
+  --trade-down-bg: rgba(239, 68, 68, 0.15);
+  --trade-down-text: #f87171;
+  --status-online: #22c55e;
+  --status-offline: #ef4444;
+
+  /* Typography */
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Layout */
+.app-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.header-container {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  padding: 1rem 1.5rem;
+  background-color: var(--bg-panel);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.brand h1 {
+  margin: 0 0 0.25rem 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+
+.brand p {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Tab Navigation */
+.tab-navigation {
+  display: flex;
+  gap: 1.5rem;
+  margin-bottom: -1rem; /* Align with bottom border */
+}
+
+.tab-button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  padding: 0.5rem 0 1rem 0;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s ease;
+}
+
+.tab-button:hover {
+  color: var(--text-primary);
+}
+
+.tab-button.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--trade-up-text);
+}
+
+/* Connection Status */
+.status-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.75rem;
+  background-color: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.status-dot.online { background-color: var(--status-online); box-shadow: 0 0 8px var(--status-online); }
+.status-dot.offline { background-color: var(--status-offline); box-shadow: 0 0 8px var(--status-offline); }
+
+/* Main Workspace */
+.workspace {
+  flex: 1;
+  padding: 0.75rem; /* Reduced from 1.5rem for edge-to-edge feel */
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+
+/* Data Grid Layout */
+.grid-container {
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.data-grid {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.data-grid th {
+  position: sticky;
+  top: 0;
+  background-color: var(--bg-panel-hover);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.75rem 1.5rem;
+  border-bottom: 1px solid var(--border-subtle);
+  z-index: 10;
+  white-space: nowrap; /* <-- Add this line */
+}
+
+.data-row {
+  border-bottom: 1px solid var(--border-subtle);
+  transition: background-color 0.15s ease;
+}
+
+.data-row:hover {
+  background-color: var(--bg-panel-hover);
+}
+
+.data-row td {
+  padding: 0.75rem 1.5rem;
+  font-family: var(--font-mono); /* Crucial: Monospaced font for financial alignment */
+  font-size: 0.875rem;
+}
+
+.symbol-cell {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.price-cell, .option-cell {
+  text-align: right;
+  font-variant-numeric: tabular-nums; /* Prevents cell width jittering on number changes */
+}
+
+.align-right {
+  text-align: right !important;
+}
+
+/* Hardware-Accelerated Flash Animations */
+@keyframes flashGreen {
+  0% { background-color: var(--trade-up-bg); color: var(--trade-up-text); }
+  100% { background-color: transparent; color: var(--text-primary); }
+}
+
+@keyframes flashRed {
+  0% { background-color: var(--trade-down-bg); color: var(--trade-down-text); }
+  100% { background-color: transparent; color: var(--text-primary); }
+}
+
+.flash-up {
+  animation: flashGreen 0.4s ease-out;
+}
+
+.flash-down {
+  animation: flashRed 0.4s ease-out;
+}
+
+.empty-state {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100%;
+  color: var(--text-secondary);
+  font-style: italic;
+  font-family: var(--font-mono);
+}
+
+/* Split Pane Layout (Table Left, TradingView Right) */
+.dashboard-grid-layout {
+  display: grid;
+  grid-template-columns: 460px 1fr; /* Increased from 360px */
+  gap: 0.75rem;
+  height: 100%;
+  overflow: hidden;
+}
+.row-selected {
+  background-color: rgba(56, 189, 248, 0.08) !important;
+  border-left: 3px solid var(--accent-blue, #38bdf8);
+}
+
+.data-row {
+  cursor: pointer;
+}
+
+/* TradingView Chart Container */
+.chart-panel {
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.chart-wrapper {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+}
+
+.chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.chart-title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.symbol-label {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.badge {
+  font-size: 0.65rem;
+  padding: 0.15rem 0.4rem;
+  background-color: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.chart-legend {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.legend-marker {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.legend-marker.cyan {
+  background-color: #38bdf8;
+}
+
+.legend-marker.purple {
+  background-color: #c084fc;
+}
+
+.tv-canvas-container {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+}
+
+
+/* Chart Toggle Buttons */
+.chart-toggle-group {
+  display: flex;
+  gap: 0.25rem;
+  background-color: var(--bg-base);
+  padding: 0.25rem;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  margin-left: 1rem;
+}
+
+.toggle-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.toggle-btn:hover {
+  color: var(--text-primary);
+}
+
+.toggle-btn.active {
+  background-color: var(--bg-panel-hover);
+  color: var(--text-primary);
+}
+
+/* Smooth Tab Transitions */
+@keyframes fadeSlideUp {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.tab-transition-wrapper {
+  animation: fadeSlideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
