@@ -15,10 +15,16 @@ import com.avraham.trading.model.MarketTick;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+/**
+ * Service responsible for fetching historical stock market data from the Alpaca REST API.
+ * This service acts as a backfill mechanism, retrieving past market data (up to 365 days)
+ * and publishing it to Kafka before the real-time stream is established.
+ */
 @Service
 public class AlpacaHistoricalDataService {
 
     private static final String TOPIC = "market_ticks";
+    // REST API endpoint to fetch 365 days of historical daily bars for a given symbol
     private static final String ALPACA_REST_URL = "https://data.alpaca.markets/v2/stocks/%s/bars?timeframe=1Day&limit=365";
 
     @Value("${alpaca.api.key}")
@@ -33,6 +39,12 @@ public class AlpacaHistoricalDataService {
     private final HttpClient httpClient = HttpClient.newHttpClient();
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    /**
+     * Fetches historical data for the specified symbol and triggers the publishing process.
+     * Constructs and sends an HTTP GET request to the Alpaca API.
+     *
+     * @param symbol The stock ticker symbol (e.g., "AAPL", "NVDA") to fetch history for.
+     */
     public void fetchAndPublishHistory(String symbol) {
         String url = String.format(ALPACA_REST_URL, symbol);
         
@@ -59,21 +71,28 @@ public class AlpacaHistoricalDataService {
         }
     }
 
+    /**
+     * Parses the JSON response from Alpaca and publishes each historical bar to Kafka.
+     *
+     * @param symbol   The stock ticker symbol.
+     * @param jsonBody The raw JSON response body returned by the Alpaca API.
+     * @throws Exception If JSON parsing or data extraction fails.
+     */
     private void parseAndPublish(String symbol, String jsonBody) throws Exception {
         JsonNode rootNode = objectMapper.readTree(jsonBody);
         JsonNode barsNode = rootNode.get("bars");
         
         if (barsNode != null && barsNode.isArray()) {
             for (JsonNode bar : barsNode) {
-                // שולפים את נתוני הסגירה של הנר
+                // Extract the closing price and volume for the current bar
                 double closePrice = bar.get("c").asDouble();
                 int volume = bar.get("v").asInt();
                 
-                // ממירים את זמן הנר (פורמט RFC3339) למילי-שניות
+                // Convert the bar timestamp (RFC3339 format) to epoch milliseconds
                 String timeString = bar.get("t").asText();
                 long timestamp = Instant.parse(timeString).toEpochMilli();
 
-                // יוצרים את הטיק ודוחפים לקפקא
+                // Create the MarketTick record and publish it to the Kafka topic
                 MarketTick historicalTick = new MarketTick(symbol, closePrice, volume, timestamp);
                 kafkaTemplate.send(TOPIC, historicalTick);
             }
