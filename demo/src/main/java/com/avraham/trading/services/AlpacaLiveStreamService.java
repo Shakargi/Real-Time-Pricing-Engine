@@ -1,4 +1,4 @@
-package com.avraham.trading.serivces;
+package com.avraham.trading.services;
 
 import java.io.IOException;
 import java.util.Collections;

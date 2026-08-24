@@ -1,4 +1,4 @@
-package com.avraham.trading.serivces;
+package com.avraham.trading.services;
 
 import java.net.URI;
 import java.net.http.HttpClient;

@@ -9,9 +9,9 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.avraham.trading.serivces.MarketStreamProvider;
-import com.avraham.trading.serivces.AlpacaHistoricalDataService;
-import com.avraham.trading.serivces.BinanceHistoricalDataService;
+import com.avraham.trading.services.AlpacaHistoricalDataService;
+import com.avraham.trading.services.BinanceHistoricalDataService;
+import com.avraham.trading.services.MarketStreamProvider;
 
 /**
  * REST Controller responsible for managing market data subscriptions.

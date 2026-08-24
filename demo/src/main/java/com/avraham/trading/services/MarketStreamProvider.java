@@ -1,4 +1,4 @@
-package com.avraham.trading.serivces;
+package com.avraham.trading.services;
 
 /**
  * Strategy interface for market data stream providers.
