@@ -12,4 +12,3 @@ alpaca:
   api:
     key: PKHKALICCQI2J2ARBCOEE4FFDB
     secret: APD2dZFk9nbNhhY6Cx3ce723caPtsyypQu66zAjuxhby
-  symbols: "AAPL, MSFT, TSLA, NVDA, SPY"
