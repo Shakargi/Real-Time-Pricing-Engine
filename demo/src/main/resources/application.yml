@@ -7,3 +7,9 @@ spring:
       bootstrap-servers: localhost:9092
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+
+alpaca:
+  api:
+    key: PKHKALICCQI2J2ARBCOEE4FFDB
+    secret: APD2dZFk9nbNhhY6Cx3ce723caPtsyypQu66zAjuxhby
+  symbols: "AAPL, MSFT, TSLA, NVDA, SPY"
