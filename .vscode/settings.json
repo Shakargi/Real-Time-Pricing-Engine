@@ -1,3 +1,4 @@
 {
-    "java.configuration.updateBuildConfiguration": "automatic"
+    "java.configuration.updateBuildConfiguration": "automatic",
+    "cmake.sourceDirectory": "C:/Users/theki/OneDrive/Desktop/SDPE/demo/src/main/cpp-worker/vcpkg/ports/7zip"
 }

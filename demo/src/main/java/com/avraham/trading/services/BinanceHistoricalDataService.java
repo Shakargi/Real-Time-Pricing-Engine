@@ -88,7 +88,7 @@ public class BinanceHistoricalDataService {
 
                 // Create the MarketTick record and publish it to the Kafka pipeline
                 MarketTick historicalTick = new MarketTick(symbol, closePrice, volume, openTime);
-                kafkaTemplate.send(TOPIC, historicalTick);
+                kafkaTemplate.send(TOPIC, symbol, historicalTick);
             }
             System.out.println("[+] Successfully backfilled " + rootNode.size() + " historical records for " + symbol);
         }

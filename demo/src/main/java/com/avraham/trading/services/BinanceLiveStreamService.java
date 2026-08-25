@@ -104,9 +104,12 @@ public class BinanceLiveStreamService implements MarketStreamProvider {
                         double rawVolume = rootNode.get("q").asDouble();
                         int volume = (int) Math.round(rawVolume);
 
-                        // Construct the unified MarketTick record and publish to Kafka
+                        // Construct the unified MarketTick record and publish to Kafka.
+                        // Keyed by symbol (same as the historical backfill) so that all
+                        // messages for a given symbol land on the same partition and
+                        // preserve per-symbol ordering.
                         MarketTick tick = new MarketTick(symbol, price, volume, System.currentTimeMillis());
-                        kafkaTemplate.send(TOPIC, tick);
+                        kafkaTemplate.send(TOPIC, symbol, tick);
                     }
                 }
             }, BINANCE_WS_URL).get();

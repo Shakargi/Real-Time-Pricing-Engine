@@ -1,99 +1,100 @@
 #include <iostream>
 #include <string>
-#include <librdkafka/rdkafkacpp.h>
+#include <unordered_map>
+#include <vector>
+#include <exception>
+#include <chrono>
+
 #include <nlohmann/json.hpp>
-#include "PricingEngine.hpp"
+#include <cppkafka/cppkafka.h> 
+
+#include "HistoricalWindow.hpp"
+#include "StochasticCalculator.hpp"
+#include "MonteCarloEngine.hpp"
 
 using json = nlohmann::json;
+using namespace cppkafka;
 
 int main() {
-    std::string brokers = "localhost:9092";
-    std::string errstr;
+    std::cout << "[+] Starting C++ Pricing Engine Worker...\n";
+    
+    std::unordered_map<std::string, HistoricalWindow> asset_windows;
+
+    Configuration config = {
+        { "metadata.broker.list", "localhost:9092" },
+        { "group.id", "pricing-engine-group-v2" },
+        { "auto.offset.reset", "earliest" } 
+    };
+
+    Consumer consumer(config);
     std::string topic_name = "market_ticks";
-    std::string group_id = "pricing-engine-group";
-
-    RdKafka::Conf *conf = RdKafka::Conf::create(RdKafka::Conf::CONF_GLOBAL);
-    conf->set("bootstrap.servers", brokers, errstr);
-    conf->set("group.id", group_id, errstr);
-    conf->set("auto.offset.reset", "latest", errstr);
-
-    RdKafka::KafkaConsumer *consumer = RdKafka::KafkaConsumer::create(conf, errstr);
-    if (!consumer) {
-        std::cerr << "Failed to create consumer: " << errstr << std::endl;
-        return 1;
-    }
-
-    RdKafka::Producer *producer = RdKafka::Producer::create(conf, errstr);
-    if (!producer){
-        std::cerr << "Failed to create producer" << errstr << std::endl;
-        return 1;
-    }
-    delete conf;
-
-    std::vector<std::string> topics = { topic_name };
-    RdKafka::ErrorCode err = consumer->subscribe(topics);
-    if (err) {
-        std::cerr << "Failed to subscribe: " << RdKafka::err2str(err) << std::endl;
-        return 1;
-    }
-
-    std::cout << "Waiting for messages on " << topic_name << "..." << std::endl;
+    consumer.subscribe({ topic_name });
+    
+    std::cout << "[+] C++ Kafka Consumer started. Listening to topic: " << topic_name << "\n";
 
     while (true) {
-        RdKafka::Message *msg = consumer->consume(1000);
-
-        if (msg->err() == RdKafka::ERR_NO_ERROR) {
-            try {
-                std::string payload(static_cast<const char*>(msg->payload()), msg->len());
-                
-                json tick_data = json::parse(payload);
-
-                std::string symbol = tick_data["symbol"];
-                double price = tick_data["price"];
-
-                double option_price = PricingEngine::calculateOptionPrice(price);
-
-                std::cout << "[Processed] " << symbol 
-                          << " | Stock: " << price 
-                          << " -> Option Price: " << option_price << std::endl;
-
-
-                json result_msg;
-                result_msg["symbol"] = symbol;
-                result_msg["underlying_price"] = price;
-                result_msg["option_price"] = option_price;
-
-                std::string result_str = result_msg.dump();
-
-                RdKafka::ErrorCode produce_err = producer->produce(
-                    "pricing_results",
-                    RdKafka::Topic::PARTITION_UA,
-                    RdKafka::Producer::RK_MSG_COPY,
-                    const_cast<char*>(result_str.c_str()), result_str.size(),
-                    NULL, 0, 0, NULL, NULL
-                );
-
-                if (produce_err != RdKafka::ERR_NO_ERROR) {
-                    std::cerr << "Failed to produce to topic: " << RdKafka::err2str(produce_err) << std::endl;
-                }
-
-                producer->poll(0);
-            } 
-            catch (const json::parse_error& e) {
-                std::cerr << "JSON Parse Error: " << e.what() << std::endl;
-            }
-        } 
-        else if (msg->err() != RdKafka::ERR__PARTITION_EOF && msg->err() != RdKafka::ERR__TIMED_OUT) {
-            std::cerr << "Consume failed: " << msg->errstr() << std::endl;
-        }
+        Message msg = consumer.poll(std::chrono::milliseconds(1000));
         
-        delete msg;
+        if (!msg) continue;
+        if (msg.get_error()) {
+            if (!msg.is_eof()) {
+                std::cerr << "[-] Kafka error: " << msg.get_error().to_string() << "\n";
+            }
+            continue;
+        }
+
+        try {
+            std::string payload(msg.get_payload());
+            json tick = json::parse(payload);
+            
+            std::string symbol = tick["symbol"];
+            double price = tick["price"];
+            long long timestamp_ms = tick["timestamp"]; 
+            long long epoch_sec = timestamp_ms / 1000;
+
+            // עדכון המחיר - ייצור חלון חדש של 365 ימים אם זו מניה חדשה
+            asset_windows[symbol].add_price(price, epoch_sec);
+
+            if (asset_windows[symbol].is_ready()) {
+                std::vector<double> snapshot = asset_windows[symbol].get_snapshot();
+                
+                // זיהוי אוטומטי של מספר ימי המסחר בשנה (קריפטו לעומת וול סטריט)
+                double trading_days = (symbol.find("USDT") != std::string::npos) ? 365.0 : 252.0;
+
+                double sigma = StochasticCalculator::get_annualized_volatility(snapshot, trading_days);
+                double mu = StochasticCalculator::get_annualized_drift(snapshot, trading_days);
+                
+                // הדפסה שמראה בבירור את גודל המדגם ביחס לחלון המקסימלי
+                std::cout << "[*] " << symbol 
+                          << " | Data points: " << snapshot.size() << "/365"
+                          << " | Price: $" << price 
+                          << " | Drift: " << (mu * 100.0) << "%" 
+                          << " | Vol: " << (sigma * 100.0) << "%\n";
+
+                // הרצת מונטה קרלו רק אם יש לנו מינימום מדגם סטטיסטי סביר (30 ימי מסחר היסטוריים)
+                if (snapshot.size() >= 30 && sigma > 0.0) {
+                    size_t future_days = 30; // אופק התחזית שלנו (כמה ימים קדימה לחזות)
+                    double T = future_days / trading_days; 
+                    size_t num_paths = 10000;
+
+                    auto paths = MonteCarloEngine::simulate_paths(price, mu, sigma, T, future_days, num_paths);
+                    
+                    double expected_price = 0.0;
+                    for (const auto& path : paths) {
+                        expected_price += path.back(); 
+                    }
+                    expected_price /= num_paths;
+                    
+                    std::cout << "    [->] MC Simulation (10,000 paths): Expected Price in " 
+                              << future_days << " days = $" << expected_price << "\n";
+                }
+            }
+        } catch (const json::exception& e) {
+            std::cerr << "[-] JSON Parsing error: " << e.what() << "\n";
+        } catch (const std::exception& e) {
+            std::cerr << "[-] Error processing tick: " << e.what() << "\n";
+        }
     }
 
-    consumer->close();
-    delete consumer;
-
-    producer->flush(5000);
-    delete producer;
     return 0;
 }
