@@ -5,6 +5,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Instant;
+import java.time.LocalDate;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -23,9 +24,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 @Service
 public class AlpacaHistoricalDataService {
 
+    // Kafka topic where the historical market data will be published
     private static final String TOPIC = "market_ticks";
-    // REST API endpoint to fetch 365 days of historical daily bars for a given symbol
-    private static final String ALPACA_REST_URL = "https://data.alpaca.markets/v2/stocks/%s/bars?timeframe=1Day&limit=365";
+    
+    // REST API endpoint for historical daily bars.
+    // Explicit 'start' date and 'feed=iex' ensure data retrieval for free-tier accounts.
+    private static final String ALPACA_REST_URL = "https://data.alpaca.markets/v2/stocks/%s/bars?timeframe=1Day&limit=365&start=%s&feed=iex";
 
     @Value("${alpaca.api.key}")
     private String apiKey;
@@ -41,12 +45,14 @@ public class AlpacaHistoricalDataService {
 
     /**
      * Fetches historical data for the specified symbol and triggers the publishing process.
-     * Constructs and sends an HTTP GET request to the Alpaca API.
+     * Calculates the start date dynamically (365 days in the past) and sends the GET request.
      *
      * @param symbol The stock ticker symbol (e.g., "AAPL", "NVDA") to fetch history for.
      */
     public void fetchAndPublishHistory(String symbol) {
-        String url = String.format(ALPACA_REST_URL, symbol);
+        // Alpaca requires an explicit start date; otherwise, it defaults to the start of today
+        String startDate = LocalDate.now().minusDays(365).toString();
+        String url = String.format(ALPACA_REST_URL, symbol, startDate);
         
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
@@ -57,7 +63,7 @@ public class AlpacaHistoricalDataService {
                 .build();
 
         try {
-            System.out.println("[*] Fetching historical data for: " + symbol);
+            System.out.println("[*] Fetching historical stock data for: " + symbol + " from " + startDate);
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             
             if (response.statusCode() == 200) {
@@ -67,12 +73,13 @@ public class AlpacaHistoricalDataService {
                 System.err.println("[-] Response: " + response.body());
             }
         } catch (Exception e) {
-            System.err.println("[-] Error fetching historical data: " + e.getMessage());
+            System.err.println("[-] Error fetching Alpaca historical data: " + e.getMessage());
         }
     }
 
     /**
      * Parses the JSON response from Alpaca and publishes each historical bar to Kafka.
+     * For a single-symbol query (/v2/stocks/{symbol}/bars), bars are provided directly in an array.
      *
      * @param symbol   The stock ticker symbol.
      * @param jsonBody The raw JSON response body returned by the Alpaca API.
@@ -82,7 +89,8 @@ public class AlpacaHistoricalDataService {
         JsonNode rootNode = objectMapper.readTree(jsonBody);
         JsonNode barsNode = rootNode.get("bars");
         
-        if (barsNode != null && barsNode.isArray()) {
+        // Verify that the 'bars' field is not null and is a valid JSON array
+        if (barsNode != null && barsNode.isArray() && !barsNode.isEmpty()) {
             for (JsonNode bar : barsNode) {
                 // Extract the closing price and volume for the current bar
                 double closePrice = bar.get("c").asDouble();
@@ -92,9 +100,11 @@ public class AlpacaHistoricalDataService {
                 String timeString = bar.get("t").asText();
                 long timestamp = Instant.parse(timeString).toEpochMilli();
 
-                // Create the MarketTick record and publish it to the Kafka topic
+                // Create the unified MarketTick record
                 MarketTick historicalTick = new MarketTick(symbol, closePrice, volume, timestamp);
-                kafkaTemplate.send(TOPIC, historicalTick);
+                
+                // Publish to Kafka using the symbol as key to ensure partition affinity and ordering
+                kafkaTemplate.send(TOPIC, symbol, historicalTick);
             }
             System.out.println("[+] Successfully backfilled " + barsNode.size() + " historical records for " + symbol);
         } else {
