@@ -3,7 +3,9 @@ package com.avraham.trading.services;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,7 +26,7 @@ import jakarta.annotation.PostConstruct;
 /**
  * Service responsible for managing the real-time WebSocket connection to the Binance cryptocurrency market stream.
  * It handles dynamic subscriptions, automatic reconnections, and parses raw trade payloads
- * to publish them to the central Kafka pipeline.
+ * to publish them to the central Kafka pipeline with rate-limiting (throttling).
  * Implements the {@link MarketStreamProvider} interface to act as a strategy for crypto routing.
  */
 @Service
@@ -41,6 +43,12 @@ public class BinanceLiveStreamService implements MarketStreamProvider {
 
     // State management: Thread-safe set to track active crypto subscriptions for reconnection handling
     private final Set<String> activeSymbols = Collections.synchronizedSet(new HashSet<>());
+    
+    // Throttling state: Tracks the last time a tick was sent to Kafka for each symbol
+    private final Map<String, Long> lastSentTimes = new ConcurrentHashMap<>();
+    
+    // The desired rate limit in milliseconds (1000ms = 1 tick per second max)
+    private static final long THROTTLE_MS = 1000;
     
     // The active WebSocket session
     private WebSocketSession activeSession;
@@ -104,12 +112,18 @@ public class BinanceLiveStreamService implements MarketStreamProvider {
                         double rawVolume = rootNode.get("q").asDouble();
                         int volume = (int) Math.round(rawVolume);
 
-                        // Construct the unified MarketTick record and publish to Kafka.
-                        // Keyed by symbol (same as the historical backfill) so that all
-                        // messages for a given symbol land on the same partition and
-                        // preserve per-symbol ordering.
-                        MarketTick tick = new MarketTick(symbol, price, volume, System.currentTimeMillis());
-                        kafkaTemplate.send(TOPIC, symbol, tick);
+                        long currentTime = System.currentTimeMillis();
+                        long lastSent = lastSentTimes.getOrDefault(symbol, 0L);
+
+                        // THROTTLING LOGIC: Only publish if at least THROTTLE_MS has passed since the last publish
+                        if (currentTime - lastSent >= THROTTLE_MS) {
+                            // Construct the unified MarketTick record and publish to Kafka.
+                            MarketTick tick = new MarketTick(symbol, price, volume, currentTime);
+                            kafkaTemplate.send(TOPIC, symbol, tick);
+                            
+                            // Update the last sent timestamp for this symbol
+                            lastSentTimes.put(symbol, currentTime);
+                        }
                     }
                 }
             }, BINANCE_WS_URL).get();
@@ -180,6 +194,10 @@ public class BinanceLiveStreamService implements MarketStreamProvider {
                     this.activeSession.sendMessage(new TextMessage(unsubPayload));
                     System.out.println("[-] Unsubscribed from Binance: " + upperSymbol);
                 }
+                
+                // Cleanup the throttling map to prevent memory leaks over time
+                lastSentTimes.remove(upperSymbol);
+                
             } catch (Exception e) {
                 System.err.println("[-] Failed to unsubscribe from " + upperSymbol + ": " + e.getMessage());
             }

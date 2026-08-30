@@ -3,7 +3,9 @@ package com.avraham.trading.services;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,7 +27,7 @@ import jakarta.annotation.PostConstruct;
 /**
  * Service responsible for managing the real-time WebSocket connection to the Alpaca market data stream.
  * It handles authentication, dynamic subscriptions for stocks, automatic reconnections,
- * and parsing incoming market ticks to publish them to Kafka.
+ * and parsing incoming market ticks to publish them to Kafka with rate-limiting (throttling).
  * Implements the {@link MarketStreamProvider} interface for dynamic routing.
  */
 @Service
@@ -47,6 +49,12 @@ public class AlpacaLiveStreamService implements MarketStreamProvider {
 
     // State management: Thread-safe set of currently subscribed symbols to allow recovery upon disconnection
     private final Set<String> activeSymbols = Collections.synchronizedSet(new HashSet<>());
+    
+    // Throttling state: Tracks the last time a tick was sent to Kafka for each symbol
+    private final Map<String, Long> lastSentTimes = new ConcurrentHashMap<>();
+    
+    // The desired rate limit in milliseconds (1000ms = 1 tick per second max)
+    private static final long THROTTLE_MS = 1000;
     
     // The active WebSocket session used to send subscription requests dynamically
     private WebSocketSession activeSession;
@@ -109,9 +117,20 @@ public class AlpacaLiveStreamService implements MarketStreamProvider {
                                 double price = node.get("p").asDouble();
                                 int volume = node.get("s").asInt();
 
-                                // Construct the tick and publish to the Kafka pipeline
-                                MarketTick tick = new MarketTick(symbol, price, volume, System.currentTimeMillis());
-                                kafkaTemplate.send(TOPIC, tick);
+                                long currentTime = System.currentTimeMillis();
+                                long lastSent = lastSentTimes.getOrDefault(symbol, 0L);
+
+                                // THROTTLING LOGIC: Only publish if at least THROTTLE_MS has passed
+                                if (currentTime - lastSent >= THROTTLE_MS) {
+                                    // Construct the tick and publish to the Kafka pipeline
+                                    MarketTick tick = new MarketTick(symbol, price, volume, currentTime);
+                                    
+                                    // Added 'symbol' as the key to ensure partition affinity
+                                    kafkaTemplate.send(TOPIC, symbol, tick);
+                                    
+                                    // Update the last sent timestamp for this symbol
+                                    lastSentTimes.put(symbol, currentTime);
+                                }
                             }
                         }
                     }
@@ -179,6 +198,10 @@ public class AlpacaLiveStreamService implements MarketStreamProvider {
                     this.activeSession.sendMessage(new TextMessage(unsubPayload));
                     System.out.println("[-] Unsubscribed from Alpaca: " + upperSymbol);
                 }
+                
+                // Cleanup the throttling map to prevent memory leaks over time
+                lastSentTimes.remove(upperSymbol);
+                
             } catch (Exception e) {
                 System.err.println("[-] Failed to unsubscribe from " + upperSymbol + ": " + e.getMessage());
             }
