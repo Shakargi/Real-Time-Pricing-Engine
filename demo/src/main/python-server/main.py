@@ -7,31 +7,45 @@ from concurrent.futures import ThreadPoolExecutor
 app = FastAPI()
 
 KAFKA_BROKER = 'localhost:9092'
-TOPIC = 'pricing_results'
+TOPICS = ['pricing_results', 'market_ticks']
 GROUP_ID = 'python-websocket-group'
 
-active_connections = []
+# 1. הפרדת הרשימות: רשימה נפרדת לכל סוג של מסך
+live_market_connections = []
+pricing_connections = []
 
 executor = ThreadPoolExecutor(max_workers=1)
-
 main_loop = None 
 
-async def submit_to_websockets(data: str):
-
-    for connection in active_connections:
-        await connection.send_text(data)
+async def submit_to_websockets(data: str, topic: str):
+    dead_connections = []
+    
+    # 2. החלטה לאן לשלוח את הנתונים לפי הנושא (Topic)
+    target_connections = live_market_connections if topic == 'market_ticks' else pricing_connections
+    
+    for connection in target_connections:
+        try:
+            await connection.send_text(data)
+        except Exception as e:
+            print(f"[-] Failed to send to a client on {topic}: {e}")
+            dead_connections.append(connection)
+            
+    # Cleanup dead connections
+    for dead in dead_connections:
+        if dead in target_connections:
+            target_connections.remove(dead)
+            print(f"[*] Cleaned up dead connection. Active on {topic}: {len(target_connections)}")
 
 def kafka_poll_task():
-
     conf = {
         'bootstrap.servers': KAFKA_BROKER,
         'group.id': GROUP_ID,
-        'auto.offset.reset': 'latest'
+        'auto.offset.reset': 'earliest'
     }
     consumer = Consumer(conf)
-    consumer.subscribe([TOPIC])
+    consumer.subscribe(TOPICS)
     
-    print(f"[*] ThreadPool: Kafka Consumer listening on {TOPIC}...")
+    print(f"[*] ThreadPool: Kafka Consumer listening on {TOPICS}...")
 
     try:
         while True:
@@ -44,11 +58,14 @@ def kafka_poll_task():
                     print(f"Kafka Error: {msg.error()}")
                 continue
 
+            # 3. חילוץ שם הנושא והמידע
+            topic = msg.topic() 
             data = msg.value().decode('utf-8')
-            
+
+            print(f"[{topic.upper()}] {data}") 
 
             if main_loop:
-                asyncio.run_coroutine_threadsafe(submit_to_websockets(data), main_loop)
+                asyncio.run_coroutine_threadsafe(submit_to_websockets(data, topic), main_loop)
 
     except Exception as e:
         print(f"Error in Kafka Task: {e}")
@@ -59,17 +76,35 @@ def kafka_poll_task():
 async def startup_event():
     global main_loop
     main_loop = asyncio.get_running_loop()
-    
     main_loop.run_in_executor(executor, kafka_poll_task)
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+
+# ==========================================
+# 4. יצירת Endpoints ייעודיים לכל קומפוננטה
+# ==========================================
+
+@app.websocket("/ws/live")
+async def websocket_live_endpoint(websocket: WebSocket):
     await websocket.accept()
-    active_connections.append(websocket)
-    print(f"[+] WebSocket client connected! Total: {len(active_connections)}")
+    live_market_connections.append(websocket)
+    print(f"[+] Live Market client connected! Total: {len(live_market_connections)}")
     try:
         while True:
             await websocket.receive_text()
-    except WebSocketDisconnect:
-        active_connections.remove(websocket)
-        print(f"[-] WebSocket client disconnected. Total: {len(active_connections)}")
+    except (WebSocketDisconnect, Exception):
+        if websocket in live_market_connections:
+            live_market_connections.remove(websocket)
+            print(f"[-] Live Market client disconnected. Total: {len(live_market_connections)}")
+
+@app.websocket("/ws/pricing")
+async def websocket_pricing_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    pricing_connections.append(websocket)
+    print(f"[+] Pricing (Monte Carlo) client connected! Total: {len(pricing_connections)}")
+    try:
+        while True:
+            await websocket.receive_text()
+    except (WebSocketDisconnect, Exception):
+        if websocket in pricing_connections:
+            pricing_connections.remove(websocket)
+            print(f"[-] Pricing client disconnected. Total: {len(pricing_connections)}")

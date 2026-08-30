@@ -20,17 +20,27 @@ int main() {
     
     std::unordered_map<std::string, HistoricalWindow> asset_windows;
 
-    Configuration config = {
+    // Consumer configuration
+    Configuration consumer_config = {
         { "metadata.broker.list", "localhost:9092" },
         { "group.id", "pricing-engine-group-v2" },
-        { "auto.offset.reset", "earliest" } 
+        { "auto.offset.reset", "earliest" }
     };
 
-    Consumer consumer(config);
-    std::string topic_name = "market_ticks";
-    consumer.subscribe({ topic_name });
+    Consumer consumer(consumer_config);
+    std::string input_topic = "market_ticks";
+    consumer.subscribe({ input_topic });
     
-    std::cout << "[+] C++ Kafka Consumer started. Listening to topic: " << topic_name << "\n";
+    // Producer configuration
+    Configuration producer_config = {
+        { "metadata.broker.list", "localhost:9092" }
+    };
+
+    Producer producer(producer_config);
+    std::string output_topic = "pricing_results";
+
+    std::cout << "[+] C++ Kafka Consumer started. Listening to: " << input_topic << "\n";
+    std::cout << "[+] C++ Kafka Producer ready. Publishing to: " << output_topic << "\n";
 
     while (true) {
         Message msg = consumer.poll(std::chrono::milliseconds(1000));
@@ -52,28 +62,24 @@ int main() {
             long long timestamp_ms = tick["timestamp"]; 
             long long epoch_sec = timestamp_ms / 1000;
 
-            // עדכון המחיר - ייצור חלון חדש של 365 ימים אם זו מניה חדשה
             asset_windows[symbol].add_price(price, epoch_sec);
 
             if (asset_windows[symbol].is_ready()) {
                 std::vector<double> snapshot = asset_windows[symbol].get_snapshot();
                 
-                // זיהוי אוטומטי של מספר ימי המסחר בשנה (קריפטו לעומת וול סטריט)
                 double trading_days = (symbol.find("USDT") != std::string::npos) ? 365.0 : 252.0;
 
                 double sigma = StochasticCalculator::get_annualized_volatility(snapshot, trading_days);
                 double mu = StochasticCalculator::get_annualized_drift(snapshot, trading_days);
                 
-                // הדפסה שמראה בבירור את גודל המדגם ביחס לחלון המקסימלי
                 std::cout << "[*] " << symbol 
                           << " | Data points: " << snapshot.size() << "/365"
                           << " | Price: $" << price 
                           << " | Drift: " << (mu * 100.0) << "%" 
                           << " | Vol: " << (sigma * 100.0) << "%\n";
 
-                // הרצת מונטה קרלו רק אם יש לנו מינימום מדגם סטטיסטי סביר (30 ימי מסחר היסטוריים)
                 if (snapshot.size() >= 30 && sigma > 0.0) {
-                    size_t future_days = 30; // אופק התחזית שלנו (כמה ימים קדימה לחזות)
+                    size_t future_days = 30;
                     double T = future_days / trading_days; 
                     size_t num_paths = 10000;
 
@@ -87,6 +93,22 @@ int main() {
                     
                     std::cout << "    [->] MC Simulation (10,000 paths): Expected Price in " 
                               << future_days << " days = $" << expected_price << "\n";
+
+                    // Structured JSON payload matching frontend interface specifications
+                    json result_json = {
+                        {"symbol", symbol},
+                        {"current_price", price},
+                        {"expected_price", expected_price},
+                        {"volatility", sigma},
+                        {"drift", mu},
+                        {"window_size", snapshot.size()},
+                        {"timestamp", std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch()).count()}
+                    };
+
+                    std::string json_str = result_json.dump();
+                    producer.produce(MessageBuilder(output_topic).payload(json_str));
+                    producer.flush();
                 }
             }
         } catch (const json::exception& e) {
