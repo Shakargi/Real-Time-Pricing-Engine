@@ -4,12 +4,16 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.ArrayList;
+import java.util.List;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
 
 import com.avraham.trading.model.MarketTick;
+import com.avraham.trading.model.OHLCVCandleDTO;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -92,5 +96,45 @@ public class BinanceHistoricalDataService {
             }
             System.out.println("[+] Successfully backfilled " + rootNode.size() + " historical records for " + symbol);
         }
+    }
+
+    /**
+     * Fetches historical OHLCV chart data directly from Binance API.
+     * Returns up to 1000 candles for the requested interval to render the initial frontend chart.
+     *
+     * @param symbol   The cryptocurrency pair (e.g., "BTCUSDT").
+     * @param interval The timeframe interval (e.g., "1m", "5m", "1h").
+     * @return A list of OHLCVCandleDTOs formatted for frontend consumption.
+     */
+    public List<OHLCVCandleDTO> fetchChartData(String symbol, String interval) {
+        List<OHLCVCandleDTO> candles = new ArrayList<>();
+        RestTemplate restTemplate = new RestTemplate();
+        
+        // Binance Klines endpoint: limits to 1000 data points per request
+        String url = String.format("https://api.binance.com/api/v3/klines?symbol=%s&interval=%s&limit=1000", symbol, interval);
+        
+        try {
+            // Binance returns an array of mixed-type arrays (numbers and strings)
+            Object[][] response = restTemplate.getForObject(url, Object[][].class);
+            
+            if (response != null) {
+                for (Object[] kline : response) {
+                    // Extracting data based on Binance API documentation mapping
+                    long time = ((Number) kline[0]).longValue();
+                    double open = Double.parseDouble(kline[1].toString());
+                    double high = Double.parseDouble(kline[2].toString());
+                    double low = Double.parseDouble(kline[3].toString());
+                    double close = Double.parseDouble(kline[4].toString());
+                    double volume = Double.parseDouble(kline[5].toString());
+                    
+                    candles.add(new OHLCVCandleDTO(time, open, high, low, close, volume));
+                }
+            }
+            System.out.println("[+] Fetched " + candles.size() + " historical chart candles for " + symbol);
+        } catch (Exception e) {
+            System.err.println("[-] Error fetching chart data from Binance for " + symbol + ": " + e.getMessage());
+        }
+        
+        return candles;
     }
 }
