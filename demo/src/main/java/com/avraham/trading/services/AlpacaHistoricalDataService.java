@@ -129,7 +129,11 @@ public class AlpacaHistoricalDataService {
     public List<OHLCVCandleDTO> fetchChartData(String symbol, String interval) {
         List<OHLCVCandleDTO> candles = new ArrayList<>();
         String alpacaTimeframe = mapToAlpacaTimeframe(interval);
-        String url = String.format(ALPACA_CHART_URL, symbol, alpacaTimeframe);
+        
+        String startDate = LocalDate.now().minusDays(5).toString();
+        
+        String url = String.format("https://data.alpaca.markets/v2/stocks/%s/bars?timeframe=%s&limit=1000&start=%s&feed=iex", 
+                                   symbol, alpacaTimeframe, startDate);
         
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
@@ -148,9 +152,7 @@ public class AlpacaHistoricalDataService {
                 
                 if (bars != null && bars.isArray()) {
                     for (JsonNode bar : bars) {
-                        // Alpaca returns timestamp as an ISO-8601 string (e.g., "2021-04-13T14:30:00Z")
                         long time = Instant.parse(bar.get("t").asText()).toEpochMilli();
-                        
                         double open = bar.get("o").asDouble();
                         double high = bar.get("h").asDouble();
                         double low = bar.get("l").asDouble();

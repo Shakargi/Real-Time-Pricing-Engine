@@ -11,21 +11,32 @@ import type { MarketTick, OHLCVCandle } from '../types';
 const SymbolLiveChart: React.FC<{ symbol: string; globalTick: MarketTick | null }> = ({ symbol, globalTick }) => {
     const [historicalCandles, setHistoricalCandles] = useState<OHLCVCandle[]>([]);
     const [isLoading, setIsLoading] = useState<boolean>(true);
+    const [error, setError] = useState<string | null>(null);
 
     // 1. Fetch 24-hour historical data on mount
     useEffect(() => {
         const fetchHistory = async () => {
             try {
                 setIsLoading(true);
-                // Calls the new Java Endpoint we just built!
+                setError(null);
+                
+                // Calls the new Java Endpoint with Fallback mechanism
                 const response = await fetch(`http://localhost:8081/api/symbols/${symbol}/chart?interval=1m`);
+                
                 if (response.ok) {
                     const data = await response.json();
-                    setHistoricalCandles(data);
-                    console.log(`[+] Loaded ${data.length} historical candles for ${symbol}`);
+                    if (data && data.length > 0) {
+                        setHistoricalCandles(data);
+                        console.log(`[+] Loaded ${data.length} historical candles for ${symbol}`);
+                    } else {
+                        setError(`No data found for ${symbol}.`);
+                    }
+                } else {
+                    setError(`Failed to fetch history (Status: ${response.status})`);
                 }
-            } catch (error) {
-                console.error(`[-] Failed to fetch history for ${symbol}`, error);
+            } catch (err) {
+                console.error(`[-] Failed to fetch history for ${symbol}`, err);
+                setError("Network error fetching history.");
             } finally {
                 setIsLoading(false);
             }
@@ -39,17 +50,50 @@ const SymbolLiveChart: React.FC<{ symbol: string; globalTick: MarketTick | null 
     const { candles, currentCandle } = useMarketCandles(displayedTick);
 
     // 3. Combine historical backfill with real-time stream safely.
-    // TradingViewChart's internal sorting will deduplicate any overlapping timestamps.
     const liveCandles = currentCandle ? [...candles, currentCandle] : candles;
-    const chartData = [...historicalCandles, ...liveCandles];
+    const rawChartData = [...historicalCandles, ...liveCandles];
+
+    const uniqueDataMap = new Map();
+
+    rawChartData.forEach(candle => {
+        const minuteAlignedMs = Math.floor(candle.time / 60000) * 60000;
+        
+        const unixTime = Math.floor(minuteAlignedMs / 1000);
+        
+        const existing = uniqueDataMap.get(unixTime);
+        
+        if (existing) {
+            uniqueDataMap.set(unixTime, {
+                ...existing,
+                close: candle.close,
+                high: Math.max(existing.high, candle.high),
+                low: Math.min(existing.low, candle.low),
+                volume: existing.volume + (candle.volume || 0)
+            });
+        } else {
+            uniqueDataMap.set(unixTime, { ...candle, time: unixTime as any });
+        }
+    });
+
+    const chartData = Array.from(uniqueDataMap.values()).sort((a, b) => a.time - b.time);
 
     return (
         <div className="chart-container" style={{ border: '1px solid #2b2b43', borderRadius: '5px', overflow: 'hidden' }}>
             <h3 style={{ padding: '10px', background: '#131722', color: '#26a69a', margin: 0, display: 'flex', justifyContent: 'space-between' }}>
                 <span>{symbol} Live Chart</span>
-                {isLoading && <span style={{ fontSize: '0.8rem', color: '#f5a623' }}>Loading History...</span>}
             </h3>
-            <TradingViewChart data={chartData} />
+            
+            <div style={{ minHeight: '400px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#1e222d' }}>
+                {isLoading ? (
+                    <div style={{ color: '#8b9bb4', fontSize: '1.2rem' }}>Fetching market data...</div>
+                ) : error ? (
+                    <div style={{ color: '#ef5350', fontSize: '1.2rem' }}>{error}</div>
+                ) : (
+                    <div style={{ width: '100%', height: '400px' }}>
+                        <TradingViewChart data={chartData} />
+                    </div>
+                )}
+            </div>
         </div>
     );
 };
@@ -71,7 +115,7 @@ const LiveDashboard: React.FC = () => {
 
     const handleAddSymbol = async () => {
         if (symbolInput.trim()) {
-            await subscribe(symbolInput.trim());
+            await subscribe(symbolInput.trim().toUpperCase());
             setSymbolInput('');
         }
     };
@@ -103,7 +147,8 @@ const LiveDashboard: React.FC = () => {
 
                 {subscribedList.length > 0 && (
                     <div className="tabs-container">
-                        {subscribedList.map(sym => (
+                        {/* TYPE FIX: explicitly defining sym as string */}
+                        {subscribedList.map((sym: string) => (
                             <div key={sym} className="tab-group">
                                 <button 
                                     className={`tab-btn ${selectedSymbol === sym ? 'active' : ''}`}
@@ -128,7 +173,8 @@ const LiveDashboard: React.FC = () => {
                 {subscribedList.length === 0 ? (
                     <p>No symbol selected. Enter a symbol or select one from the tabs.</p>
                 ) : (
-                    subscribedList.map(sym => (
+                    /* TYPE FIX: explicitly defining sym as string */
+                    subscribedList.map((sym: string) => (
                         <div key={sym} style={{ display: sym === selectedSymbol ? 'block' : 'none' }}>
                             <SymbolLiveChart symbol={sym} globalTick={tick} />
                         </div>

@@ -1,17 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import type { MonteCarloResult, ConnectionState } from '../types';
+import type { MonteCarloResultDTO } from '../types';
 
-/**
- * Custom hook to manage the WebSocket connection for Monte Carlo simulation results.
- * Implements automatic reconnection with a fixed delay.
- * 
- * @param url The WebSocket endpoint URL (e.g., ws://localhost:8000/ws/pricing)
- */
+// הגדרת מצבי החיבור כדי שנוכל להציג אותם ב-UI
+export type ConnectionState = 'CONNECTING' | 'CONNECTED' | 'DISCONNECTED' | 'ERROR';
+
 export const useMonteCarloData = (url: string) => {
-    const [data, setData] = useState<MonteCarloResult | null>(null);
+    const [data, setData] = useState<MonteCarloResultDTO | null>(null);
     const [status, setStatus] = useState<ConnectionState>('CONNECTING');
     const wsRef = useRef<WebSocket | null>(null);
-    // FIXED: Using ReturnType to automatically infer the correct timeout type for the browser environment
     const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const connect = useCallback(() => {
@@ -26,9 +22,7 @@ export const useMonteCarloData = (url: string) => {
 
         ws.onmessage = (event: MessageEvent) => {
             try {
-                const parsedData: MonteCarloResult = JSON.parse(event.data);
-                // Append local timestamp for charting purposes if not provided
-                parsedData.timestamp = parsedData.timestamp || Date.now();
+                const parsedData: MonteCarloResultDTO = JSON.parse(event.data);
                 setData(parsedData);
             } catch (error) {
                 console.error("[-] Failed to parse Monte Carlo data payload:", error);
@@ -39,7 +33,6 @@ export const useMonteCarloData = (url: string) => {
             console.warn("[-] Monte Carlo Stream disconnected. Attempting to reconnect in 3s...");
             setStatus('DISCONNECTED');
             
-            // Attempt to reconnect after 3 seconds
             reconnectTimeoutRef.current = setTimeout(() => {
                 connect();
             }, 3000);
@@ -54,12 +47,8 @@ export const useMonteCarloData = (url: string) => {
 
     useEffect(() => {
         connect();
-
-        // Cleanup function on unmount
         return () => {
-            if (reconnectTimeoutRef.current) {
-                clearTimeout(reconnectTimeoutRef.current);
-            }
+            if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
             if (wsRef.current) {
                 wsRef.current.onclose = null;
                 wsRef.current.onerror = null;
@@ -68,5 +57,16 @@ export const useMonteCarloData = (url: string) => {
         };
     }, [connect]);
 
-    return { data, status };
+    // הפונקציה החדשה שמאפשרת לנו לשלוח פקודת חישוב לשרת דרך ה-WebSocket
+    const requestSimulation = useCallback((symbol: string) => {
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            setData(null); // מנקים את הדאטה הישן כדי להראות מצב טעינה
+            wsRef.current.send(JSON.stringify({ action: 'run_simulation', symbol }));
+            console.log(`[*] Simulation request sent for ${symbol}`);
+        } else {
+            console.error("[-] Cannot send request: WebSocket is not connected.");
+        }
+    }, []);
+
+    return { data, status, requestSimulation };
 };
