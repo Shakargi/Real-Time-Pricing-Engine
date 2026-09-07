@@ -130,10 +130,15 @@ public class AlpacaHistoricalDataService {
         List<OHLCVCandleDTO> candles = new ArrayList<>();
         String alpacaTimeframe = mapToAlpacaTimeframe(interval);
         
-        String startDate = LocalDate.now().minusDays(5).toString();
+        LocalDate startDate;
+        if (interval.equals("1d")) {
+            startDate = LocalDate.now().minusYears(2);
+        } else {
+            startDate = LocalDate.now().minusDays(5);
+        }
         
         String url = String.format("https://data.alpaca.markets/v2/stocks/%s/bars?timeframe=%s&limit=1000&start=%s&feed=iex", 
-                                   symbol, alpacaTimeframe, startDate);
+                                   symbol, alpacaTimeframe, startDate.toString());
         
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
