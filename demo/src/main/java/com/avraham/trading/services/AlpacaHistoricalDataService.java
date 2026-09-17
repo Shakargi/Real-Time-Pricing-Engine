@@ -131,14 +131,27 @@ public class AlpacaHistoricalDataService {
         String alpacaTimeframe = mapToAlpacaTimeframe(interval);
         
         LocalDate startDate;
-        if (interval.equals("1d")) {
-            startDate = LocalDate.now().minusYears(2);
-        } else {
-            startDate = LocalDate.now().minusDays(5);
+        switch(interval) {
+            case "1d":
+                startDate = LocalDate.now().minusYears(10);
+                break;
+            case "1h":
+                startDate = LocalDate.now().minusYears(3);
+                break;
+            case "15m":
+                startDate = LocalDate.now().minusYears(1);
+                break;
+            case "5m":
+                startDate = LocalDate.now().minusMonths(6);
+                break;
+            case "1m":
+            default:
+                startDate = LocalDate.now().minusMonths(1);
+                break;
         }
         
-        String url = String.format("https://data.alpaca.markets/v2/stocks/%s/bars?timeframe=%s&limit=1000&start=%s&feed=iex", 
-                                   symbol, alpacaTimeframe, startDate.toString());
+        String url = String.format("https://data.alpaca.markets/v2/stocks/%s/bars?timeframe=%s&limit=10000&start=%s&feed=iex", 
+                           symbol, alpacaTimeframe, startDate.toString());
         
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))

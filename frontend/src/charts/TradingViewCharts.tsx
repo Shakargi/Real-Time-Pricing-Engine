@@ -47,6 +47,10 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({ data }) => {
                 background: { type: ColorType.Solid, color: COLORS.background },
                 textColor: COLORS.text,
             },
+            localization: {
+                locale: 'en-US',
+                dateFormat: 'yyyy-MM-dd',
+            },
             grid: {
                 vertLines: { color: COLORS.grid },
                 horzLines: { color: COLORS.grid },
