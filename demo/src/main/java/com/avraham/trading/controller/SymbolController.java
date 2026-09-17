@@ -1,7 +1,9 @@
 package com.avraham.trading.controller;
 
 import java.util.List;
+import java.util.Map;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -13,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.avraham.trading.services.AlpacaHistoricalDataService;
+import com.avraham.trading.services.AssetProfileService;
 import com.avraham.trading.services.BinanceHistoricalDataService;
 import com.avraham.trading.services.MarketStreamProvider;
 import com.avraham.trading.model.OHLCVCandleDTO; 
@@ -96,5 +99,17 @@ public class SymbolController {
             System.err.println("[-] Failed to fetch chart history for " + upperSymbol + ": " + e.getMessage());
             return ResponseEntity.internalServerError().build();
         }
+    }
+
+    @Autowired
+    private AssetProfileService assetProfileService;
+
+    @GetMapping("/{symbol}/profile")
+    public ResponseEntity<Map<String, String>> getSymbolProfile(@PathVariable String symbol) {
+        Map<String, String> profile = assetProfileService.getAssetProfile(symbol);
+        if (profile.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        return ResponseEntity.ok(profile);
     }
 }
