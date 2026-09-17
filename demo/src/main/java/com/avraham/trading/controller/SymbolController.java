@@ -107,9 +107,6 @@ public class SymbolController {
     @GetMapping("/{symbol}/profile")
     public ResponseEntity<Map<String, String>> getSymbolProfile(@PathVariable String symbol) {
         Map<String, String> profile = assetProfileService.getAssetProfile(symbol);
-        if (profile.isEmpty()) {
-            return ResponseEntity.notFound().build();
-        }
         return ResponseEntity.ok(profile);
     }
 }

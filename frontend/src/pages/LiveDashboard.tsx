@@ -5,9 +5,6 @@ import { useMarketCandles } from '../hooks/useMarketCandles';
 import TradingViewChart from '../charts/TradingViewCharts';
 import type { MarketTick, OHLCVCandle } from '../types';
 
-// ==========================================
-// Timeframe Configuration
-// ==========================================
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '1d'] as const;
 type Timeframe = typeof TIMEFRAMES[number];
 
@@ -19,22 +16,14 @@ const INTERVAL_MS: Record<Timeframe, number> = {
     '1d': 24 * 60 * 60 * 1000
 };
 
-// ==========================================
-// Isolated Chart Component for Each Symbol
-// ==========================================
-interface SymbolLiveChartProps {
-    symbol: string;
-    globalTick: MarketTick | null;
-    timeframe: Timeframe;
-}
-
-// ==========================================
-// Isolated Chart Component for Each Symbol
-// ==========================================
 interface AssetProfile {
-    name: string;
-    sector: string;
-    description: string;
+    name?: string;
+    sector?: string;
+    description?: string;
+    marketCap?: string;
+    trailingPE?: string;
+    beta?: string;
+    dividendYield?: string;
 }
 
 const SymbolLiveChart: React.FC<{ symbol: string; globalTick: MarketTick | null; timeframe: Timeframe }> = ({ symbol, globalTick, timeframe }) => {
@@ -48,29 +37,28 @@ const SymbolLiveChart: React.FC<{ symbol: string; globalTick: MarketTick | null;
             try {
                 setIsLoading(true);
                 setError(null);
-                setHistoricalCandles([]);
                 
                 const [chartRes, profileRes] = await Promise.all([
                     fetch(`http://localhost:8081/api/symbols/${symbol}/chart?interval=${timeframe}`),
-                    fetch(`http://localhost:8081/api/symbols/${symbol}/profile`)
+                    fetch(`http://localhost:8081/api/symbols/${symbol}/profile`).catch(() => null)
                 ]);
                 
-                if (!chartRes.ok || !profileRes.ok) {
-                    setError(`The ticker '${symbol}' does not exist or is unsupported.`);
+                if (!chartRes.ok) {
+                    setError(`No market data available for '${symbol}'.`);
                     return;
                 }
 
                 const chartData = await chartRes.json();
-                const profileData = await profileRes.json();
+                const profileData = profileRes && profileRes.ok ? await profileRes.json() : null;
 
                 if (chartData && chartData.length > 0) {
                     setHistoricalCandles(chartData);
                     setProfile(profileData);
                 } else {
-                    setError(`No market data available for '${symbol}'.`);
+                    setError(`Ticker '${symbol}' has no historical data.`);
                 }
             } catch (err) {
-                setError(`Network error: Unable to resolve ticker '${symbol}'.`);
+                setError(`Network error fetching data for '${symbol}'.`);
             } finally {
                 setIsLoading(false);
             }
@@ -106,183 +94,124 @@ const SymbolLiveChart: React.FC<{ symbol: string; globalTick: MarketTick | null;
     });
 
     const chartData = Array.from(uniqueDataMap.values()).sort((a, b) => a.time - b.time);
-
     const currentPrice = chartData.length > 0 ? chartData[chartData.length - 1].close : null;
     const previousPrice = chartData.length > 1 ? chartData[chartData.length - 2].close : null;
-    const priceColor = currentPrice && previousPrice 
-        ? (currentPrice >= previousPrice ? '#26a69a' : '#ef5350') 
-        : '#d1d4dc';
+    const priceColor = currentPrice && previousPrice ? (currentPrice >= previousPrice ? '#26a69a' : '#ef5350') : '#d1d4dc';
 
     const periodHigh = chartData.length > 0 ? Math.max(...chartData.map(c => c.high)) : 0;
     const periodLow = chartData.length > 0 ? Math.min(...chartData.map(c => c.low)) : 0;
     const totalVolume = chartData.length > 0 ? chartData.reduce((sum, c) => sum + (c.volume || 0), 0) : 0;
 
     return (
-        <div className="chart-container" style={{ border: '1px solid #2b2b43', borderRadius: '5px', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-            
-            {/* Header */}
-            <div style={{ padding: '10px 20px', background: '#131722', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #2b2b43' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-                    <h3 style={{ color: '#d1d4dc', margin: 0, fontSize: '1.2rem', fontWeight: '600' }}>
-                        {symbol} {profile && <span style={{ fontSize: '0.9rem', color: '#8b9bb4', fontWeight: 'normal', marginLeft: '10px' }}>| {profile.name}</span>}
+        <div style={{ border: '1px solid #2b2b43', borderRadius: '5px', overflow: 'hidden', display: 'flex', flexDirection: 'column', background: '#131722' }}>
+            <div style={{ padding: '15px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #2b2b43' }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '15px' }}>
+                    <h3 style={{ color: '#d1d4dc', margin: 0, fontSize: '1.4rem' }}>
+                        {symbol} <span style={{ fontSize: '0.9rem', color: '#8b9bb4', fontWeight: 'normal' }}>{profile?.name ? `| ${profile.name}` : ''}</span>
                     </h3>
                     {currentPrice && (
-                        <span style={{ fontSize: '1.5rem', fontWeight: 'bold', color: priceColor }}>
+                        <span style={{ fontSize: '1.6rem', fontWeight: 'bold', color: priceColor }}>
                             ${currentPrice.toFixed(2)}
                         </span>
                     )}
                 </div>
-                {isLoading && <span style={{ fontSize: '0.8rem', color: '#f5a623' }}>Loading Data...</span>}
+                {isLoading && <span style={{ color: '#f5a623', fontSize: '0.9rem' }}>Loading Chart...</span>}
             </div>
             
-            {/* Chart Area */}
-            <div style={{ minHeight: '400px', flexGrow: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#1e222d' }}>
+            <div style={{ minHeight: '400px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#1e222d' }}>
                 {isLoading ? (
-                    <div style={{ color: '#8b9bb4', fontSize: '1.2rem' }}>Aggregating Market Data...</div>
+                    <div style={{ color: '#8b9bb4' }}>Aggregating Market Data...</div>
                 ) : error ? (
-                    <div style={{ color: '#ef5350', fontSize: '1.2rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
-                        <span>⚠️ {error}</span>
-                        <span style={{ fontSize: '0.9rem', color: '#8b9bb4' }}>Please remove this tab and try a valid ticker like AAPL or BTCUSDT.</span>
-                    </div>
+                    <div style={{ color: '#ef5350' }}>⚠️ {error}</div>
                 ) : (
-                    <div style={{ width: '100%', height: '400px' }}>
-                        <TradingViewChart data={chartData} />
-                    </div>
+                    <div style={{ width: '100%', height: '400px' }}><TradingViewChart data={chartData} /></div>
                 )}
             </div>
 
-            {/* Asset Profile & Statistics Panel */}
             {!isLoading && !error && chartData.length > 0 && profile && (
-                <div style={{ background: '#131722', borderTop: '1px solid #2b2b43', display: 'flex', flexDirection: 'column' }}>
-                    
-                    {/* Quantitative Stats */}
-                    <div style={{ padding: '12px 20px', display: 'flex', gap: '40px', borderBottom: '1px solid rgba(43,43,67,0.5)', color: '#8b9bb4', fontSize: '0.9rem' }}>
-                        <div>
-                            <span style={{ display: 'block', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Period High</span>
-                            <span style={{ color: '#d1d4dc', fontWeight: '500' }}>${periodHigh.toFixed(2)}</span>
-                        </div>
-                        <div>
-                            <span style={{ display: 'block', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Period Low</span>
-                            <span style={{ color: '#d1d4dc', fontWeight: '500' }}>${periodLow.toFixed(2)}</span>
-                        </div>
-                        <div>
-                            <span style={{ display: 'block', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Accumulated Volume</span>
-                            <span style={{ color: '#d1d4dc', fontWeight: '500' }}>{totalVolume.toLocaleString()}</span>
-                        </div>
-                        <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
-                            <span style={{ display: 'block', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Sector</span>
-                            <span style={{ color: '#26a69a', fontWeight: '500' }}>{profile.sector}</span>
-                        </div>
+                <div style={{ borderTop: '1px solid #2b2b43' }}>
+                    <div style={{ padding: '12px 20px', display: 'flex', flexWrap: 'wrap', gap: '30px', borderBottom: '1px solid rgba(43,43,67,0.5)', color: '#8b9bb4', fontSize: '0.85rem', background: '#1a1e29' }}>
+                        <div><span style={{ display: 'block', textTransform: 'uppercase', fontSize: '0.7rem' }}>Period High</span><span style={{ color: '#d1d4dc' }}>${periodHigh.toFixed(2)}</span></div>
+                        <div><span style={{ display: 'block', textTransform: 'uppercase', fontSize: '0.7rem' }}>Period Low</span><span style={{ color: '#d1d4dc' }}>${periodLow.toFixed(2)}</span></div>
+                        <div><span style={{ display: 'block', textTransform: 'uppercase', fontSize: '0.7rem' }}>Total Volume</span><span style={{ color: '#d1d4dc' }}>{totalVolume.toLocaleString()}</span></div>
+                        <div><span style={{ display: 'block', textTransform: 'uppercase', fontSize: '0.7rem' }}>Market Cap</span><span style={{ color: '#d1d4dc' }}>{profile.marketCap || '-'}</span></div>
+                        <div><span style={{ display: 'block', textTransform: 'uppercase', fontSize: '0.7rem' }}>P/E Ratio</span><span style={{ color: '#d1d4dc' }}>{profile.trailingPE || '-'}</span></div>
+                        <div><span style={{ display: 'block', textTransform: 'uppercase', fontSize: '0.7rem' }}>Beta</span><span style={{ color: '#d1d4dc' }}>{profile.beta || '-'}</span></div>
+                        <div><span style={{ display: 'block', textTransform: 'uppercase', fontSize: '0.7rem' }}>Div Yield</span><span style={{ color: '#d1d4dc' }}>{profile.dividendYield || '-'}</span></div>
                     </div>
-
-                    {/* Company Description */}
-                    <div style={{ padding: '15px 20px', color: '#d1d4dc', fontSize: '0.9rem', lineHeight: '1.5' }}>
-                        <p style={{ margin: 0, opacity: 0.85, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                            {profile.description}
-                        </p>
+                    <div style={{ padding: '15px 20px', color: '#8b9bb4', fontSize: '0.85rem', lineHeight: '1.6' }}>
+                        <p style={{ margin: 0, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{profile.description || 'No description available.'}</p>
                     </div>
-
                 </div>
             )}
         </div>
     );
 };
 
-// ==========================================
-// Main Dashboard Component
-// ==========================================
 const LiveDashboard: React.FC = () => {
     const { tick, status } = useLiveMarketData("ws://localhost:8000/ws/live");
-    const { 
-        subscribedList, 
-        selectedSymbol, 
-        setSelectedSymbol, 
-        subscribe, 
-        unsubscribe 
-    } = useMarketSubscriptions();
-
+    const { subscribedList, selectedSymbol, setSelectedSymbol, subscribe, unsubscribe } = useMarketSubscriptions();
     const [symbolInput, setSymbolInput] = useState<string>('');
-    const [globalTimeframe, setGlobalTimeframe] = useState<Timeframe>('1m');
-
-    const handleAddSymbol = async () => {
-        if (symbolInput.trim()) {
-            await subscribe(symbolInput.trim().toUpperCase());
-            setSymbolInput('');
-        }
-    };
+    const [globalTimeframe, setGlobalTimeframe] = useState<Timeframe>('1d');
 
     return (
-        <div className="live-dashboard">
-            <header className="dashboard-header" style={{ marginBottom: '15px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <h2>Live Market Data (Pro Terminal)</h2>
-                    <p className={`status-indicator ${status.toLowerCase()}`}>
+        <div style={{ padding: '20px', color: '#d1d4dc' }}>
+            {/* Header Layout Fix */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', marginBottom: '20px', background: '#131722', padding: '20px', borderRadius: '8px', border: '1px solid #2b2b43' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '15px' }}>
+                    <h2 style={{ margin: 0 }}>Live Market Data (Pro Terminal)</h2>
+                    <div style={{ padding: '6px 12px', borderRadius: '4px', fontWeight: 'bold', fontSize: '0.9rem', background: status === 'CONNECTED' ? 'rgba(38, 166, 154, 0.1)' : 'rgba(239, 83, 80, 0.1)', color: status === 'CONNECTED' ? '#26a69a' : '#ef5350' }}>
                         Stream Status: {status}
-                    </p> 
+                    </div>
                 </div>
                 
-                <div style={{ display: 'flex', gap: '20px', alignItems: 'center', marginTop: '10px' }}>
-                    <div className="control-panel" style={{ display: 'flex', gap: '10px' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '20px', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', gap: '10px' }}>
                         <input 
                             type="text" 
-                            placeholder="Enter Symbol (e.g. AAPL)" 
+                            placeholder="Symbol (e.g. AAPL)" 
                             value={symbolInput}
                             onChange={(e) => setSymbolInput(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && handleAddSymbol()}
-                            style={{ padding: '8px', borderRadius: '4px', border: '1px solid #2b2b43', background: '#131722', color: '#fff' }}
+                            onKeyDown={(e) => e.key === 'Enter' && symbolInput && (subscribe(symbolInput.trim().toUpperCase()), setSymbolInput(''))}
+                            style={{ padding: '10px', borderRadius: '4px', border: '1px solid #2b2b43', background: '#1e222d', color: '#fff', width: '200px' }}
                         />
-                        <button onClick={handleAddSymbol} className="btn-primary" style={{ padding: '8px 16px', cursor: 'pointer' }}>
+                        <button onClick={() => symbolInput && (subscribe(symbolInput.trim().toUpperCase()), setSymbolInput(''))} style={{ padding: '10px 20px', background: '#2962ff', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>
                             Subscribe
                         </button>
                     </div>
 
-                    {/* TradingView-style Timeframe Selector */}
-                    <div style={{ display: 'flex', background: '#131722', borderRadius: '4px', padding: '2px' }}>
+                    <div style={{ display: 'flex', background: '#1e222d', borderRadius: '4px', padding: '4px' }}>
                         {TIMEFRAMES.map(tf => (
                             <button
                                 key={tf}
                                 onClick={() => setGlobalTimeframe(tf)}
-                                style={{
-                                    background: globalTimeframe === tf ? '#2b2b43' : 'transparent',
-                                    color: globalTimeframe === tf ? '#26a69a' : '#d1d4dc',
-                                    border: 'none',
-                                    padding: '6px 12px',
-                                    borderRadius: '3px',
-                                    cursor: 'pointer',
-                                    fontWeight: globalTimeframe === tf ? 'bold' : 'normal',
-                                }}
+                                style={{ background: globalTimeframe === tf ? '#2b2b43' : 'transparent', color: globalTimeframe === tf ? '#fff' : '#8b9bb4', border: 'none', padding: '8px 16px', borderRadius: '4px', cursor: 'pointer', fontWeight: globalTimeframe === tf ? 'bold' : 'normal' }}
                             >
                                 {tf.toUpperCase()}
                             </button>
                         ))}
                     </div>
                 </div>
+            </div>
 
-                {subscribedList.length > 0 && (
-                    <div className="tabs-container" style={{ marginTop: '15px' }}>
-                        {subscribedList.map((sym: string) => (
-                            <div key={sym} className="tab-group">
-                                <button 
-                                    className={`tab-btn ${selectedSymbol === sym ? 'active' : ''}`}
-                                    onClick={() => setSelectedSymbol(sym)}
-                                >
-                                    {sym}
-                                </button>
-                                <button 
-                                    className="tab-close-btn"
-                                    onClick={() => unsubscribe(sym)}
-                                >
-                                    ✕
-                                </button>
-                            </div>
-                        ))}
-                    </div>
-                )}
-            </header>
+            {subscribedList.length > 0 && (
+                <div style={{ display: 'flex', gap: '10px', marginBottom: '15px', overflowX: 'auto' }}>
+                    {subscribedList.map((sym: string) => (
+                        <div key={sym} style={{ display: 'flex', alignItems: 'center', background: selectedSymbol === sym ? '#2962ff' : '#1e222d', borderRadius: '4px', overflow: 'hidden' }}>
+                            <button onClick={() => setSelectedSymbol(sym)} style={{ padding: '10px 20px', background: 'transparent', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: selectedSymbol === sym ? 'bold' : 'normal' }}>
+                                {sym}
+                            </button>
+                            <button onClick={() => unsubscribe(sym)} style={{ padding: '10px', background: 'transparent', color: '#8b9bb4', border: 'none', cursor: 'pointer' }}>✕</button>
+                        </div>
+                    ))}
+                </div>
+            )}
 
-            <main className="dashboard-content">
+            <main>
                 {subscribedList.length === 0 ? (
-                    <p style={{ color: '#8b9bb4' }}>No symbol selected. Enter a symbol or select one from the tabs.</p>
+                    <div style={{ textAlign: 'center', padding: '50px', color: '#8b9bb4', background: '#131722', borderRadius: '8px', border: '1px solid #2b2b43' }}>
+                        No active streams. Subscribe to a symbol to view live market data.
+                    </div>
                 ) : (
                     subscribedList.map((sym: string) => (
                         <div key={sym} style={{ display: sym === selectedSymbol ? 'block' : 'none' }}>
