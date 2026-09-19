@@ -133,20 +133,20 @@ public class AlpacaHistoricalDataService {
         LocalDate startDate;
         switch(interval) {
             case "1d":
-                startDate = LocalDate.now().minusYears(1);
+                startDate = LocalDate.now().minusYears(2);
                 break;
             case "1h":
-                startDate = LocalDate.now().minusMonths(2);
+                startDate = LocalDate.now().minusMonths(4);
                 break;
             case "15m":
-                startDate = LocalDate.now().minusDays(14);
+                startDate = LocalDate.now().minusDays(28);
                 break;
             case "5m":
-                startDate = LocalDate.now().minusDays(5);
+                startDate = LocalDate.now().minusDays(10);
                 break;
             case "1m":
             default:
-                startDate = LocalDate.now().minusDays(2);
+                startDate = LocalDate.now().minusDays(5);
                 break;
         }
         
@@ -176,6 +176,11 @@ public class AlpacaHistoricalDataService {
                         double low = bar.get("l").asDouble();
                         double close = bar.get("c").asDouble();
                         double volume = bar.get("v").asDouble();
+                        
+                        boolean isFlatline = (open == close) && (high == low);
+                        if (volume <= 0 || isFlatline) {
+                            continue;
+                        }
                         
                         candles.add(new OHLCVCandleDTO(time, open, high, low, close, volume));
                     }

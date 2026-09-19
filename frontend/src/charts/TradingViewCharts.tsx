@@ -4,31 +4,27 @@ import type { IChartApi, ISeriesApi, Time } from 'lightweight-charts';
 import type { OHLCVCandle } from '../types';
 
 // ==========================================
-// Configuration Constants
+// CSS Variable Injector Utility
 // ==========================================
-const CHART_HEIGHT = 400;
-const COLORS = {
-    background: '#131722',
-    text: '#d1d4dc',
-    grid: '#2b2b43',
-    upCandle: '#26a69a',
-    downCandle: '#ef5350',
+/**
+ * Extracts a computed CSS variable from the DOM to synchronize
+ * Canvas-based charts with the global CSS Design System.
+ */
+const getComputedCssVar = (varName: string, fallback: string): string => {
+    if (typeof window !== 'undefined') {
+        const value = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+        return value || fallback;
+    }
+    return fallback;
 };
 
-/**
- * Props for the TradingViewChart component.
- */
 interface TradingViewChartProps {
-    /** Array of formatted OHLCV candles to be rendered on the chart. */
     data: OHLCVCandle[];
 }
 
 /**
- * A React wrapper component for the Lightweight Charts library by TradingView.
- * Responsible for rendering a high-performance financial candlestick chart.
- * 
- * @param {TradingViewChartProps} props - The component props containing the chart data.
- * @returns {JSX.Element} The mounted chart container.
+ * Institutional-grade React wrapper for TradingView Lightweight Charts.
+ * Features dynamic CSS variable injection and ResizeObserver for fluid layouts.
  */
 const TradingViewChart: React.FC<TradingViewChartProps> = ({ data }) => {
     const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -36,58 +32,76 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({ data }) => {
     const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
 
     // ---------------------------------------------------------
-    // Chart Initialization and Cleanup (Mount/Unmount)
+    // Chart Initialization and Auto-Resizing
     // ---------------------------------------------------------
     useEffect(() => {
         if (!chartContainerRef.current) return;
 
-        // Initialize the chart instance with a professional UI theme configuration
+        // Dynamically resolve colors from fintech-theme.css
+        const theme = {
+            bg: getComputedCssVar('--bg-base', '#050507'),
+            text: getComputedCssVar('--text-secondary', '#94a3b8'),
+            grid: getComputedCssVar('--border-subtle', '#222631'),
+            up: getComputedCssVar('--trade-up-text', '#4ade80'),
+            down: getComputedCssVar('--trade-down-text', '#f87171'),
+            crosshair: getComputedCssVar('--text-muted', '#64748b'),
+        };
+
         const chart = createChart(chartContainerRef.current, {
             layout: {
-                background: { type: ColorType.Solid, color: COLORS.background },
-                textColor: COLORS.text,
+                background: { type: ColorType.Solid, color: theme.bg },
+                textColor: theme.text,
             },
             localization: {
                 locale: 'en-US',
                 dateFormat: 'yyyy-MM-dd',
             },
             grid: {
-                vertLines: { color: COLORS.grid },
-                horzLines: { color: COLORS.grid },
+                vertLines: { color: theme.grid, style: 1 },
+                horzLines: { color: theme.grid, style: 1 },
             },
-            width: chartContainerRef.current.clientWidth,
-            height: CHART_HEIGHT,
+            crosshair: {
+                vertLine: { color: theme.crosshair, labelBackgroundColor: theme.crosshair },
+                horzLine: { color: theme.crosshair, labelBackgroundColor: theme.crosshair },
+            },
             timeScale: {
                 timeVisible: true,
                 secondsVisible: false,
+                borderColor: theme.grid,
             },
+            rightPriceScale: {
+                borderColor: theme.grid,
+            },
+            // Initialize with container's current dimensions
+            width: chartContainerRef.current.clientWidth,
+            height: chartContainerRef.current.clientHeight,
         });
 
-        // Add and configure the candlestick series
         const candlestickSeries = chart.addCandlestickSeries({
-            upColor: COLORS.upCandle,
-            downColor: COLORS.downCandle,
+            upColor: theme.up,
+            downColor: theme.down,
             borderVisible: false,
-            wickUpColor: COLORS.upCandle,
-            wickDownColor: COLORS.downCandle,
+            wickUpColor: theme.up,
+            wickDownColor: theme.down,
         });
 
-        // Persist instances to refs for data updates and window resizing
         chartRef.current = chart;
         seriesRef.current = candlestickSeries;
 
-        // Handle window resize events to maintain responsive design boundaries
-        const handleResize = () => {
-            if (chartContainerRef.current && chartRef.current) {
-                chartRef.current.applyOptions({ width: chartContainerRef.current.clientWidth });
-            }
-        };
-        
-        window.addEventListener('resize', handleResize);
+        // Use ResizeObserver for hardware-accelerated, container-aware responsive scaling
+        const resizeObserver = new ResizeObserver((entries) => {
+            if (entries.length === 0 || !chartRef.current) return;
+            const newRect = entries[0].contentRect;
+            chartRef.current.applyOptions({ 
+                width: newRect.width, 
+                height: newRect.height 
+            });
+        });
 
-        // Cleanup function to prevent memory leaks during component unmounting
+        resizeObserver.observe(chartContainerRef.current);
+
         return () => {
-            window.removeEventListener('resize', handleResize);
+            resizeObserver.disconnect();
             chart.remove();
             chartRef.current = null;
             seriesRef.current = null;
@@ -95,14 +109,12 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({ data }) => {
     }, []);
 
     // ---------------------------------------------------------
-    // Data Injection and Real-Time Updates
+    // Data Injection Pipeline
     // ---------------------------------------------------------
     useEffect(() => {
         if (!seriesRef.current || !data || data.length === 0) return;
 
         try {
-            // Map incoming DTOs to strictly match the Lightweight Charts expected structure.
-            // Note: Timestamp conversions and chronological deduplication are handled by the parent component.
             const formattedData = data.map((candle) => ({
                 time: candle.time as Time,
                 open: Number(candle.open),
@@ -111,9 +123,7 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({ data }) => {
                 close: Number(candle.close),
             }));
 
-            // Inject the formatted data into the chart series layer
             seriesRef.current.setData(formattedData);
-            
         } catch (error) {
             console.error("[-] Failed to inject data into TradingView chart:", error);
         }
@@ -123,12 +133,7 @@ const TradingViewChart: React.FC<TradingViewChartProps> = ({ data }) => {
         <div 
             ref={chartContainerRef} 
             className="tradingview-chart-container"
-            style={{ 
-                width: '100%', 
-                height: `${CHART_HEIGHT}px`, 
-                minHeight: `${CHART_HEIGHT}px`, 
-                display: 'block' 
-            }} 
+            style={{ width: '100%', height: '100%', position: 'relative' }} 
         />
     );
 };

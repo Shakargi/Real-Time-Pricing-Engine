@@ -1,6 +1,17 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import Plot from 'react-plotly.js';
 import type { HistogramBin } from '../types';
+
+// ==========================================
+// CSS Variable Injector Utility
+// ==========================================
+const getComputedCssVar = (varName: string, fallback: string): string => {
+    if (typeof window !== 'undefined') {
+        const value = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+        return value || fallback;
+    }
+    return fallback;
+};
 
 interface DistributionHistogramProps {
     data: HistogramBin[];
@@ -9,16 +20,24 @@ interface DistributionHistogramProps {
 
 /**
  * Renders the probability distribution of the asset's price at maturity (T).
- * Displays a log-normal distribution using pre-binned data from the backend
- * to optimize rendering performance.
+ * Fully synchronized with the global CSS Design System for a native terminal look.
  */
 const DistributionHistogram: React.FC<DistributionHistogramProps> = ({ data, symbol }) => {
-    // Extract X (prices) and Y (frequencies) from the binned data array
+    
+    // Dynamically resolve colors from fintech-theme.css on render
+    const theme = useMemo(() => ({
+        text: getComputedCssVar('--text-primary', '#d1d4dc'),
+        textMuted: getComputedCssVar('--text-secondary', '#94a3b8'),
+        grid: getComputedCssVar('--border-subtle', '#2b2b43'),
+        barColor: getComputedCssVar('--border-focus', '#2962ff'),
+        barBorder: getComputedCssVar('--border-active', '#38bdf8')
+    }), []);
+
     const prices = data.map(bin => bin.binCenter);
     const counts = data.map(bin => bin.count);
 
     return (
-        <div className="chart-container" style={{ width: '100%', height: '100%' }}>
+        <div className="chart-panel fade-in" style={{ width: '100%', height: '100%', border: 'none' }}>
             <Plot
                 data={[
                     {
@@ -26,10 +45,10 @@ const DistributionHistogram: React.FC<DistributionHistogramProps> = ({ data, sym
                         y: counts,
                         type: 'bar',
                         marker: {
-                            color: '#2962ff', // Professional blue to contrast with the Fan Chart green
-                            opacity: 0.8,
+                            color: theme.barColor,
+                            opacity: 0.85,
                             line: {
-                                color: '#1e53e5', // Slightly darker border for crisp edges
+                                color: theme.barBorder,
                                 width: 1
                             }
                         },
@@ -39,29 +58,32 @@ const DistributionHistogram: React.FC<DistributionHistogramProps> = ({ data, sym
                 ]}
                 layout={{
                     title: {
-                        text: `${symbol} - Price Distribution at Maturity (T)`,
-                        font: { color: '#d1d4dc', size: 16 }
+                        text: `${symbol} - Terminal Distribution`,
+                        font: { color: theme.text, size: 14, family: 'var(--font-mono)' }
                     },
-                    paper_bgcolor: 'rgba(0,0,0,0)', // Inherits the dark mode background
+                    paper_bgcolor: 'rgba(0,0,0,0)', 
                     plot_bgcolor: 'rgba(0,0,0,0)',
                     xaxis: {
-                        title: 'Asset Price at Maturity (USD)',
-                        color: '#d1d4dc',
-                        gridcolor: '#2b2b43',
-                        zerolinecolor: '#2b2b43',
+                        title: { text: 'Asset Price at Maturity (USD)', font: { color: theme.textMuted, size: 11 } },
+                        color: theme.textMuted,
+                        gridcolor: theme.grid,
+                        zerolinecolor: theme.grid,
+                        tickprefix: '$',
+                        tickfont: { family: 'var(--font-mono)' }
                     },
                     yaxis: {
-                        title: 'Number of Paths (Frequency)',
-                        color: '#d1d4dc',
-                        gridcolor: '#2b2b43',
-                        zerolinecolor: '#2b2b43',
+                        title: { text: 'Simulated Paths (Frequency)', font: { color: theme.textMuted, size: 11 } },
+                        color: theme.textMuted,
+                        gridcolor: theme.grid,
+                        zerolinecolor: theme.grid,
+                        tickfont: { family: 'var(--font-mono)' }
                     },
-                    margin: { t: 50, r: 20, b: 50, l: 60 },
-                    bargap: 0.05, // Creates a slight visual gap between bins
+                    margin: { t: 40, r: 20, b: 40, l: 60 },
+                    bargap: 0.1,
                     autosize: true
                 }}
                 useResizeHandler={true}
-                style={{ width: '100%', height: '400px' }}
+                style={{ width: '100%', height: '100%' }}
                 config={{ responsive: true, displayModeBar: false }}
             />
         </div>

@@ -119,13 +119,17 @@ public class BinanceHistoricalDataService {
             
             if (response != null) {
                 for (Object[] kline : response) {
-                    // Extracting data based on Binance API documentation mapping
                     long time = ((Number) kline[0]).longValue();
                     double open = Double.parseDouble(kline[1].toString());
                     double high = Double.parseDouble(kline[2].toString());
                     double low = Double.parseDouble(kline[3].toString());
                     double close = Double.parseDouble(kline[4].toString());
                     double volume = Double.parseDouble(kline[5].toString());
+                    
+                    boolean isFlatline = (open == close) && (high == low);
+                    if (volume <= 0 || isFlatline) {
+                        continue; 
+                    }
                     
                     candles.add(new OHLCVCandleDTO(time, open, high, low, close, volume));
                 }

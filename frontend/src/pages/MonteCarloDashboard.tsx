@@ -2,20 +2,19 @@ import React, { useState, useEffect } from 'react';
 import { useMonteCarloData } from '../hooks/useMonteCarloData';
 import FanChart from '../charts/FanChart';
 import DistributionHistogram from '../charts/DistributionHistogram';
+import ConnectionStatus from '../components/ConnectionStatus';
 
 /**
- * The main dashboard for Pre-Trade Monte Carlo Analysis.
- * Communicates with the backend engine via WebSockets for real-time processing.
+ * Institutional Pre-Trade Monte Carlo Analysis Dashboard.
+ * Features high-visibility KPMs (VaR, CVaR) and side-by-side stochastic distribution charts.
  */
 const MonteCarloDashboard: React.FC = () => {
     const [inputSymbol, setInputSymbol] = useState<string>('');
-    // Local state to manage the loading UI while waiting for the WS response
     const [isComputing, setIsComputing] = useState<boolean>(false);
 
-    // Initialize WebSocket connection using the correct endpoint
+    // Engine WebSocket Connection
     const { data, status, requestSimulation } = useMonteCarloData("ws://localhost:8081/ws/monte-carlo");
 
-    // Automatically hide the loading spinner when new data arrives
     useEffect(() => {
         if (data) {
             setIsComputing(false);
@@ -29,80 +28,93 @@ const MonteCarloDashboard: React.FC = () => {
         }
     };
 
+    // Calculate approximate VaR/CVaR from FanChart bounds if backend doesn't explicitly send them
+    const renderRiskMetric = (label: string, value: string | number | undefined, isCurrency: boolean = false) => (
+        <div className="metric-card">
+            <span className="metric-label">{label}</span>
+            <span className={`metric-value ${value && typeof value === 'number' && value < 0 ? 'negative' : ''}`}>
+                {value === undefined ? '-' : `${isCurrency ? '$' : ''}${typeof value === 'number' ? value.toFixed(2) : value}`}
+            </span>
+        </div>
+    );
+
     return (
-        <div className="dashboard-container" style={{ padding: '20px', color: '#d1d4dc' }}>
-            <header style={{ marginBottom: '20px', borderBottom: '1px solid #2b2b43', paddingBottom: '15px' }}>
-                <h2>Monte Carlo Options Pricing Engine</h2>
-                <div style={{ display: 'flex', gap: '10px', marginTop: '15px', alignItems: 'center' }}>
+        <div className="main-panel fade-in" style={{ height: '100%', padding: 'var(--space-md)' }}>
+            
+            {/* Control & Status Toolbar */}
+            <header className="toolbar">
+                <div className="search-box" style={{ width: '350px' }}>
                     <input 
                         type="text" 
-                        placeholder="Enter Asset Symbol (e.g., AAPL)" 
+                        className="search-input"
+                        placeholder="Target Asset (e.g., TSLA)" 
                         value={inputSymbol}
                         onChange={(e) => setInputSymbol(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && handleRunSimulation()}
-                        style={{ padding: '8px 12px', background: '#131722', color: '#fff', border: '1px solid #2b2b43', borderRadius: '4px' }}
                     />
                     <button 
+                        className="btn-primary"
                         onClick={handleRunSimulation}
                         disabled={isComputing || status !== 'CONNECTED'}
-                        style={{ 
-                            padding: '8px 16px', 
-                            background: '#26a69a', 
-                            color: '#fff', 
-                            border: 'none', 
-                            borderRadius: '4px', 
-                            cursor: (isComputing || status !== 'CONNECTED') ? 'not-allowed' : 'pointer',
-                            opacity: (isComputing || status !== 'CONNECTED') ? 0.6 : 1
-                        }}
+                        style={{ opacity: (isComputing || status !== 'CONNECTED') ? 0.5 : 1, width: '140px' }}
                     >
-                        {isComputing ? 'Simulating...' : 'Run Simulation'}
+                        {isComputing ? 'SIMULATING...' : 'RUN ENGINE'}
                     </button>
-                    
-                    {/* Connection Status Indicator */}
-                    <span style={{ 
-                        marginLeft: '10px', 
-                        fontSize: '0.9em',
-                        color: status === 'CONNECTED' ? '#26a69a' : (status === 'ERROR' || status === 'DISCONNECTED' ? '#f23645' : '#e1ad01')
-                    }}>
-                        {status === 'CONNECTED' ? '● Connected' : `● ${status}`}
-                    </span>
                 </div>
+                
+                <ConnectionStatus status={status} label="QUANT ENGINE" />
             </header>
 
-            {/* Error/Disconnected State */}
+            {/* Error Overlay */}
             {(status === 'ERROR' || status === 'DISCONNECTED') && (
-                <div style={{ background: 'rgba(242, 54, 69, 0.1)', color: '#f23645', padding: '15px', borderRadius: '4px', marginBottom: '20px' }}>
-                    <strong>Warning:</strong> Connection to pricing engine lost. Please check if the backend is running.
+                <div className="terminal-panel" style={{ padding: 'var(--space-md)', borderLeft: '4px solid var(--status-offline)' }}>
+                    <span style={{ color: 'var(--status-offline)', fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
+                        SYSTEM FAULT: 
+                    </span>
+                    <span style={{ color: 'var(--text-secondary)', marginLeft: '8px' }}>
+                        Lost connection to the quantitative pricing engine. Verify the backend WebSocket service is active.
+                    </span>
                 </div>
             )}
 
-            {/* Loading State */}
+            {/* Empty / Loading State */}
+            {!data && !isComputing && status === 'CONNECTED' && (
+                <div className="empty-state terminal-panel" style={{ flex: 1 }}>
+                    Enter an asset symbol to initiate a 10,000-path stochastic simulation.
+                </div>
+            )}
+
             {isComputing && (
-                <div style={{ display: 'flex', justifyContent: 'center', padding: '50px' }}>
-                    <div className="spinner" style={{ color: '#26a69a' }}>Engine is computing 10,000 paths...</div>
+                <div className="empty-state terminal-panel" style={{ flex: 1 }}>
+                    <div className="skeleton-box" style={{ width: '300px', height: '4px', marginBottom: 'var(--space-md)' }} />
+                    <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>Executing Monte Carlo Matrix...</span>
                 </div>
             )}
 
-            {/* Data Visualization */}
+            {/* Simulation Results Layout */}
             {data && !isComputing && (
-                <div className="results-container">
-                    {/* Key Metrics Panel */}
-                    <div style={{ display: 'flex', gap: '20px', marginBottom: '20px', background: '#1e222d', padding: '15px', borderRadius: '5px' }}>
-                        <div><strong>Asset:</strong> {data.symbol}</div>
-                        <div><strong>Initial Price (S0):</strong> ${data.currentPrice.toFixed(2)}</div>
-                        <div><strong>Time to Maturity (T):</strong> {data.timeToMaturity} Years</div>
-                        <div><strong>Paths Simulated:</strong> {data.simulatedPaths.toLocaleString()}</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-md)', flex: 1, overflow: 'hidden' }}>
+                    
+                    {/* High-Visibility KPM Summary Cards */}
+                    <div className="metric-card-container terminal-panel" style={{ padding: 'var(--space-lg)', borderTop: 'none', borderLeft: '4px solid var(--border-active)' }}>
+                        {renderRiskMetric('Target Asset', data.symbol)}
+                        {renderRiskMetric('Initial Price (S0)', data.currentPrice, true)}
+                        {renderRiskMetric('Time to Maturity (T)', `${data.timeToMaturity} Y`)}
+                        {renderRiskMetric('Paths Simulated', data.simulatedPaths.toLocaleString())}
+                        
+                        
                     </div>
 
-                    {/* Charts Grid */}
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(500px, 1fr))', gap: '20px' }}>
-                        <div style={{ background: '#131722', border: '1px solid #2b2b43', borderRadius: '5px' }}>
+                    {/* Data Visualization Grid (Side-by-Side) */}
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-md)', flex: 1, minHeight: 0 }}>
+                        <div className="terminal-panel">
                             <FanChart data={data.fanChart} symbol={data.symbol} />
                         </div>
-                        <div style={{ background: '#131722', border: '1px solid #2b2b43', borderRadius: '5px' }}>
+                        <div className="terminal-panel">
                             <DistributionHistogram data={data.histogram} symbol={data.symbol} />
                         </div>
                     </div>
+                    
                 </div>
             )}
         </div>

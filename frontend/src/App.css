@@ -1,102 +1,113 @@
-:root {
-  --bg-color: #0f172a;
-  --panel-bg: #1e293b;
-  --text-main: #f8fafc;
-  --text-muted: #94a3b8;
-  --accent-blue: #38bdf8;
-  --accent-green: #22c55e;
-  --accent-red: #ef4444;
-  --border-color: #334155;
+/* ==========================================================================
+   Terminal Shell & Layout Styles (App.css)
+   ========================================================================== */
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+  overflow: hidden;
 }
 
-body {
-  margin: 0;
-  padding: 0;
-  background-color: var(--bg-color);
-  color: var(--text-main);
-  font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-}
-
-.dashboard-container {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 2rem;
-}
-
-.dashboard-header {
+/* Terminal Navigation Bar */
+.terminal-nav {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-bottom: 1px solid var(--border-color);
-  padding-bottom: 1rem;
-  margin-bottom: 2rem;
+  height: 48px;
+  padding: 0 var(--space-md);
+  background-color: var(--bg-panel);
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
 }
 
-.dashboard-header h1 {
-  margin: 0;
-  font-size: 1.8rem;
-  font-weight: 600;
-  letter-spacing: -0.5px;
-}
-
-.status-indicator {
+.terminal-brand {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 1rem;
+  letter-spacing: -0.01em;
+  color: #ffffff;
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  font-size: 0.9rem;
-  font-weight: 500;
+  gap: var(--space-sm);
 }
 
-.status-dot {
-  width: 10px;
-  height: 10px;
+.terminal-nav-links {
+  display: flex;
+  gap: var(--space-md);
+  height: 100%;
+}
+
+.nav-link {
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-sm);
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  transition: color 0.2s ease, border-bottom-color 0.2s ease;
+}
+
+.nav-link:hover, 
+.nav-link.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--border-focus);
+}
+
+/* Main Workspace Viewport */
+.terminal-workspace {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-md);
+  overflow: hidden;
+  background-color: var(--bg-base);
+}
+
+/* Persistent Bottom Status Bar */
+.terminal-status-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: 28px;
+  padding: 0 var(--space-md);
+  background-color: var(--bg-panel);
+  border-top: 1px solid var(--border-subtle);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.status-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+.connection-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.connection-dot {
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
 }
 
-.connected .status-dot { background-color: var(--accent-green); box-shadow: 0 0 8px var(--accent-green); }
-.disconnected .status-dot { background-color: var(--accent-red); box-shadow: 0 0 8px var(--accent-red); }
-
-.pricing-table {
-  width: 100%;
-  border-collapse: collapse;
-  background-color: var(--panel-bg);
-  border-radius: 8px;
-  overflow: hidden;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+.connection-dot.connected {
+  background-color: var(--status-online);
+  box-shadow: 0 0 6px var(--status-online);
 }
 
-.pricing-table th, .pricing-table td {
-  padding: 1rem;
-  text-align: left;
-  border-bottom: 1px solid var(--border-color);
-}
-
-.pricing-table th {
-  background-color: rgba(0, 0, 0, 0.2);
-  color: var(--text-muted);
-  font-weight: 600;
-  text-transform: uppercase;
-  font-size: 0.85rem;
-  letter-spacing: 0.5px;
-}
-
-.pricing-table tbody tr:hover {
-  background-color: rgba(255, 255, 255, 0.03);
-}
-
-.symbol-cell {
-  font-weight: 700;
-  color: var(--accent-blue);
-}
-
-.price-cell, .option-cell {
-  font-family: 'Courier New', Courier, monospace;
-  font-size: 1.1rem;
-}
-
-.waiting-data {
-  text-align: center;
-  padding: 3rem;
-  color: var(--text-muted);
-  font-style: italic;
+.connection-dot.disconnected {
+  background-color: var(--status-offline);
+  box-shadow: 0 0 6px var(--status-offline);
 }
