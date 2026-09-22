@@ -87,7 +87,7 @@ const MonteCarloDashboard: React.FC = () => {
             {isComputing && (
                 <div className="empty-state terminal-panel" style={{ flex: 1 }}>
                     <div className="skeleton-box" style={{ width: '300px', height: '4px', marginBottom: 'var(--space-md)' }} />
-                    <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>Executing Monte Carlo Matrix...</span>
+                    <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>Running 10,000-path simulation…</span>
                 </div>
             )}
 
@@ -101,11 +101,18 @@ const MonteCarloDashboard: React.FC = () => {
                         {renderRiskMetric('Initial Price (S0)', data.currentPrice, true)}
                         {renderRiskMetric('Time to Maturity (T)', `${data.timeToMaturity} Y`)}
                         {renderRiskMetric('Paths Simulated', data.simulatedPaths.toLocaleString())}
-                        
-                        
+                        {/* Compute these once, precisely, server-side from the full simulated path
+                            matrix (not approximated client-side from the already-binned fan chart
+                            display data) and add var95 / cvar95 to the WS payload. Falls back to
+                            '—' via renderRiskMetric until the backend sends them. */}
+                        {renderRiskMetric('VaR (95%)', (data as any).var95, true)}
+                        {renderRiskMetric('CVaR (95%)', (data as any).cvar95, true)}
                     </div>
 
                     {/* Data Visualization Grid (Side-by-Side) */}
+                    <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                        Shaded band shows the 5th–95th percentile range across all simulated paths.
+                    </p>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-md)', flex: 1, minHeight: 0 }}>
                         <div className="terminal-panel">
                             <FanChart data={data.fanChart} symbol={data.symbol} />

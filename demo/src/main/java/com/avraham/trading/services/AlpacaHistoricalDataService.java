@@ -24,18 +24,25 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * This service serves a dual purpose:
  * 1. Backfilling historical data (up to 365 days) and publishing it to Kafka for backend mathematical models.
  * 2. Fetching precise OHLCV chart data to populate the frontend UI immediately upon subscription.
+ *
+ * IMPORTANT: Alpaca's /v2/stocks/{symbol}/bars endpoint paginates its responses. Even when the
+ * caller passes a large "limit", a single HTTP response can still come back with only a subset of
+ * the bars for the requested range plus a "next_page_token". Every method below now follows that
+ * token until it is null, otherwise higher-resolution timeframes (1Min/5Min/15Min/1Hour) over long
+ * ranges silently truncate at the edge of the first page while low-resolution ranges (1Day, few
+ * bars) happen to fit in a single page and look fine.
  */
 @Service
 public class AlpacaHistoricalDataService {
 
     // Kafka topic where the historical market data will be published for the C++ engine
     private static final String TOPIC = "market_ticks";
-    
-    // REST API endpoint for historical daily bars used by the backend.
-    private static final String ALPACA_BACKFILL_URL = "https://data.alpaca.markets/v2/stocks/%s/bars?timeframe=1Day&limit=365&start=%s&feed=iex";
 
-    // REST API endpoint for fetching UI chart data with dynamic timeframes.
-    private static final String ALPACA_CHART_URL = "https://data.alpaca.markets/v2/stocks/%s/bars?timeframe=%s&limit=1000&feed=iex";
+    // REST API endpoint for historical daily bars used by the backend.
+    private static final String ALPACA_BACKFILL_URL = "https://data.alpaca.markets/v2/stocks/%s/bars?timeframe=1Day&limit=10000&start=%s&feed=iex";
+
+    // Safety cap on total bars pulled across all pages for a single request, to avoid runaway loops.
+    private static final int MAX_TOTAL_BARS = 50_000;
 
     @Value("${alpaca.api.key}")
     private String apiKey;
@@ -56,62 +63,79 @@ public class AlpacaHistoricalDataService {
 
     /**
      * Fetches historical data for the specified symbol and triggers the publishing process to Kafka.
-     * Calculates the start date dynamically (365 days in the past) and sends the GET request.
+     * Calculates the start date dynamically (365 days in the past) and pages through the Alpaca
+     * response until next_page_token is exhausted, so the full year is actually backfilled.
      *
      * @param symbol The stock ticker symbol (e.g., "AAPL", "NVDA") to fetch history for.
      */
     public void fetchAndPublishHistory(String symbol) {
         String startDate = LocalDate.now().minusDays(365).toString();
-        String url = String.format(ALPACA_BACKFILL_URL, symbol, startDate);
-        
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .header("APCA-API-KEY-ID", apiKey)
-                .header("APCA-API-SECRET-KEY", apiSecret)
-                .header("Accept", "application/json")
-                .GET()
-                .build();
+        String baseUrl = String.format(ALPACA_BACKFILL_URL, symbol, startDate);
+
+        int totalPublished = 0;
+        String pageToken = null;
 
         try {
             System.out.println("[*] Fetching historical stock data for: " + symbol + " from " + startDate);
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            
-            if (response.statusCode() == 200) {
-                parseAndPublish(symbol, response.body());
-            } else {
-                System.err.println("[-] Failed to fetch history for " + symbol + ". Status: " + response.statusCode());
-                System.err.println("[-] Response: " + response.body());
-            }
+
+            do {
+                String url = pageToken == null ? baseUrl : baseUrl + "&page_token=" + pageToken;
+
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(url))
+                        .header("APCA-API-KEY-ID", apiKey)
+                        .header("APCA-API-SECRET-KEY", apiSecret)
+                        .header("Accept", "application/json")
+                        .GET()
+                        .build();
+
+                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+                if (response.statusCode() != 200) {
+                    System.err.println("[-] Failed to fetch history for " + symbol + ". Status: " + response.statusCode());
+                    System.err.println("[-] Response: " + response.body());
+                    break;
+                }
+
+                JsonNode rootNode = objectMapper.readTree(response.body());
+                totalPublished += publishBars(symbol, rootNode.get("bars"));
+
+                JsonNode nextTokenNode = rootNode.get("next_page_token");
+                pageToken = (nextTokenNode != null && !nextTokenNode.isNull()) ? nextTokenNode.asText() : null;
+
+            } while (pageToken != null && totalPublished < MAX_TOTAL_BARS);
+
+            System.out.println("[+] Successfully backfilled " + totalPublished + " historical records for " + symbol);
+
         } catch (Exception e) {
             System.err.println("[-] Error fetching Alpaca historical data: " + e.getMessage());
         }
     }
 
     /**
-     * Parses the JSON response from Alpaca and publishes each historical bar to Kafka.
+     * Publishes a single page's worth of bars to Kafka.
      *
-     * @param symbol   The stock ticker symbol.
-     * @param jsonBody The raw JSON response body returned by the Alpaca API.
-     * @throws Exception If JSON parsing or data extraction fails.
+     * @param symbol  The stock ticker symbol.
+     * @param barsNode The "bars" array node from one page of the Alpaca response (may be null/empty).
+     * @return The number of bars published from this page.
      */
-    private void parseAndPublish(String symbol, String jsonBody) throws Exception {
-        JsonNode rootNode = objectMapper.readTree(jsonBody);
-        JsonNode barsNode = rootNode.get("bars");
-        
-        if (barsNode != null && barsNode.isArray() && !barsNode.isEmpty()) {
-            for (JsonNode bar : barsNode) {
-                double closePrice = bar.get("c").asDouble();
-                int volume = bar.get("v").asInt();
-                String timeString = bar.get("t").asText();
-                long timestamp = Instant.parse(timeString).toEpochMilli();
-
-                MarketTick historicalTick = new MarketTick(symbol, closePrice, volume, timestamp);
-                kafkaTemplate.send(TOPIC, symbol, historicalTick);
-            }
-            System.out.println("[+] Successfully backfilled " + barsNode.size() + " historical records for " + symbol);
-        } else {
-            System.out.println("[-] No historical data found for " + symbol);
+    private int publishBars(String symbol, JsonNode barsNode) {
+        if (barsNode == null || !barsNode.isArray() || barsNode.isEmpty()) {
+            return 0;
         }
+
+        int count = 0;
+        for (JsonNode bar : barsNode) {
+            double closePrice = bar.get("c").asDouble();
+            int volume = bar.get("v").asInt();
+            String timeString = bar.get("t").asText();
+            long timestamp = Instant.parse(timeString).toEpochMilli();
+
+            MarketTick historicalTick = new MarketTick(symbol, closePrice, volume, timestamp);
+            kafkaTemplate.send(TOPIC, symbol, historicalTick);
+            count++;
+        }
+        return count;
     }
 
     // ==========================================
@@ -120,7 +144,9 @@ public class AlpacaHistoricalDataService {
 
     /**
      * Fetches historical OHLCV chart data directly from the Alpaca API to serve the React frontend.
-     * Maps standard timeframes to Alpaca's specific format and returns up to 1000 candles.
+     * Maps standard timeframes to Alpaca's specific format, anchors requests securely to the current
+     * time, and pages through the full result set via next_page_token so intraday timeframes (1m,
+     * 5m, 15m, 1h) return data all the way up to "now" instead of stopping at the first page.
      *
      * @param symbol   The stock ticker symbol (e.g., "AAPL").
      * @param interval The timeframe interval requested by the frontend (e.g., "1m", "1h", "1d").
@@ -129,9 +155,9 @@ public class AlpacaHistoricalDataService {
     public List<OHLCVCandleDTO> fetchChartData(String symbol, String interval) {
         List<OHLCVCandleDTO> candles = new ArrayList<>();
         String alpacaTimeframe = mapToAlpacaTimeframe(interval);
-        
+
         LocalDate startDate;
-        switch(interval) {
+        switch (interval.toLowerCase()) {
             case "1d":
                 startDate = LocalDate.now().minusYears(1);
                 break;
@@ -149,28 +175,39 @@ public class AlpacaHistoricalDataService {
                 startDate = LocalDate.now().minusDays(5);
                 break;
         }
-        
+
+        // Precise RFC-3339 formatting to prevent timeline gaps
         String startParam = startDate.toString() + "T00:00:00Z";
         String endParam = Instant.now().toString();
-        
-        String url = String.format("https://data.alpaca.markets/v2/stocks/%s/bars?timeframe=%s&limit=10000&start=%s&end=%s&feed=iex", 
-                           symbol, alpacaTimeframe, startParam, endParam);
-        
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .header("APCA-API-KEY-ID", apiKey)
-                .header("APCA-API-SECRET-KEY", apiSecret)
-                .header("Accept", "application/json")
-                .GET()
-                .build();
-        
+
+        String baseUrl = String.format(
+                "https://data.alpaca.markets/v2/stocks/%s/bars?timeframe=%s&limit=10000&start=%s&end=%s&feed=iex",
+                symbol, alpacaTimeframe, startParam, endParam);
+
+        String pageToken = null;
+
         try {
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            
-            if (response.statusCode() == 200) {
+            do {
+                String url = pageToken == null ? baseUrl : baseUrl + "&page_token=" + pageToken;
+
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(url))
+                        .header("APCA-API-KEY-ID", apiKey)
+                        .header("APCA-API-SECRET-KEY", apiSecret)
+                        .header("Accept", "application/json")
+                        .GET()
+                        .build();
+
+                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+                if (response.statusCode() != 200) {
+                    System.err.println("[-] Failed to fetch UI chart data for " + symbol + ". Status: " + response.statusCode());
+                    break;
+                }
+
                 JsonNode root = objectMapper.readTree(response.body());
                 JsonNode bars = root.get("bars");
-                
+
                 if (bars != null && bars.isArray()) {
                     for (JsonNode bar : bars) {
                         long time = Instant.parse(bar.get("t").asText()).toEpochMilli();
@@ -179,28 +216,32 @@ public class AlpacaHistoricalDataService {
                         double low = bar.get("l").asDouble();
                         double close = bar.get("c").asDouble();
                         double volume = bar.get("v").asDouble();
-                        
+
                         boolean isFlatline = (open == close) && (high == low);
                         if (volume <= 0 || isFlatline) {
                             continue;
                         }
-                        
+
                         candles.add(new OHLCVCandleDTO(time, open, high, low, close, volume));
                     }
                 }
-                System.out.println("[+] Fetched " + candles.size() + " historical chart candles for " + symbol);
-            } else {
-                System.err.println("[-] Failed to fetch UI chart data for " + symbol + ". Status: " + response.statusCode());
-            }
+
+                JsonNode nextTokenNode = root.get("next_page_token");
+                pageToken = (nextTokenNode != null && !nextTokenNode.isNull()) ? nextTokenNode.asText() : null;
+
+            } while (pageToken != null && candles.size() < MAX_TOTAL_BARS);
+
+            System.out.println("[+] Fetched " + candles.size() + " historical chart candles for " + symbol);
+
         } catch (Exception e) {
             System.err.println("[-] Error fetching chart data from Alpaca for " + symbol + ": " + e.getMessage());
         }
-        
+
         return candles;
     }
 
     /**
-     * Helper method to map generic interval strings (from the React frontend) 
+     * Helper method to map generic interval strings (from the React frontend)
      * to Alpaca's strict required format.
      *
      * @param interval The generic interval (e.g., "1m").

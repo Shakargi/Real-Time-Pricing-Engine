@@ -1,10 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { useLiveMarketData } from '../hooks/useLiveMarketData';
 import { useMarketSubscriptions } from '../hooks/useMarketSubscriptions';
-import { useMarketCandles } from '../hooks/useMarketCandles';
 import TradingViewChart from '../charts/TradingViewCharts';
 import ConnectionStatus from '../components/ConnectionStatus';
-import type { MarketTick, OHLCVCandle } from '../types';
+import type { OHLCVCandle } from '../types';
+
+/**
+ * NOTE ON THE WEBSOCKET PAYLOAD SHAPE:
+ * AlpacaLiveStreamService (backend) already aggregates raw trades into a complete
+ * 1-minute OHLCVCandleDTO (time/open/high/low/close/volume) server-side and pushes
+ * THAT object to /topic/market/{symbol} — it never sends a bare price tick to the
+ * frontend. The previous version of this file re-ran that payload through
+ * `useMarketCandles`, a hook meant to build candles out of raw ticks (price/size),
+ * which double-aggregates an object that is already a finished candle. That mismatch
+ * is what produced header prices that didn't match the last plotted bar. The fix
+ * below treats the incoming WebSocket message as the candle it actually is.
+ */
 
 /**
  * Standardized timeframe intervals available for user selection.
@@ -45,10 +56,11 @@ interface AssetProfile {
  * and seamlessly feeds it into the Lightweight Charts instance.
  * 
  * @param {string} symbol - The market ticker (e.g., "AAPL").
- * @param {MarketTick | null} globalTick - The latest real-time tick received from the global stream.
+ * @param {(OHLCVCandle & { symbol: string }) | null} globalCandle - The latest live 1-minute candle
+ *        pushed from the backend's per-symbol WebSocket topic (already fully aggregated server-side).
  * @param {Timeframe} timeframe - The currently selected chart interval.
  */
-const SymbolLiveChart: React.FC<{ symbol: string; globalTick: MarketTick | null; timeframe: Timeframe }> = ({ symbol, globalTick, timeframe }) => {
+const SymbolLiveChart: React.FC<{ symbol: string; globalCandle: (OHLCVCandle & { symbol: string }) | null; timeframe: Timeframe }> = ({ symbol, globalCandle, timeframe }) => {
     const [historicalCandles, setHistoricalCandles] = useState<OHLCVCandle[]>([]);
     const [profile, setProfile] = useState<AssetProfile | null>(null);
     const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -61,6 +73,9 @@ const SymbolLiveChart: React.FC<{ symbol: string; globalTick: MarketTick | null;
             try {
                 setIsLoading(true);
                 setError(null);
+                // Clear the previous symbol/timeframe's candles immediately so the header
+                // price can't keep showing a stale value while the canvas says "loading".
+                setHistoricalCandles([]);
                 
                 const [chartRes, profileRes] = await Promise.all([
                     fetch(`http://localhost:8081/api/symbols/${symbol}/chart?interval=${timeframe}`),
@@ -96,10 +111,11 @@ const SymbolLiveChart: React.FC<{ symbol: string; globalTick: MarketTick | null;
         fetchData();
     }, [symbol, timeframe]);
 
-    // Integrate real-time WebSocket data routed to this specific symbol
-    const displayedTick = globalTick?.symbol === symbol ? globalTick : null;
-    const { candles, currentCandle } = useMarketCandles(displayedTick);
-    const liveCandles = currentCandle ? [...candles, currentCandle] : candles;
+    // Integrate real-time WebSocket data routed to this specific symbol.
+    // The backend already sends a fully-formed 1-minute candle per symbol, so this is
+    // simply "the current in-progress candle" — nothing left to aggregate client-side.
+    const liveCandle = globalCandle && globalCandle.symbol === symbol ? globalCandle : null;
+    const liveCandles = liveCandle ? [liveCandle] : [];
     
     /**
      * Merges historical data with live stream updates.
@@ -161,7 +177,7 @@ const SymbolLiveChart: React.FC<{ symbol: string; globalTick: MarketTick | null;
     };
 
     const chartData = mergeData();
-    
+
     // Extract dynamic UI metrics for the top header and side panel
     const currentPrice = chartData.length > 0 ? chartData[chartData.length - 1].close : null;
     const previousPrice = chartData.length > 1 ? chartData[chartData.length - 2].close : null;
@@ -169,6 +185,14 @@ const SymbolLiveChart: React.FC<{ symbol: string; globalTick: MarketTick | null;
     const isPriceUp = currentPrice && previousPrice && currentPrice >= previousPrice;
     const priceClass = isPriceUp ? 'flash-up' : 'flash-down';
     const priceColor = isPriceUp ? 'var(--trade-up-text)' : 'var(--trade-down-text)';
+
+    // Change vs. the OPEN of the loaded period (not vs. the prior candle) — a stable reference
+    // that means the same thing regardless of which timeframe tab is active, and that we can
+    // express with a glyph so direction isn't communicated by color alone.
+    const periodOpen = chartData.length > 0 ? chartData[0].open : null;
+    const changeAbs = currentPrice != null && periodOpen != null ? currentPrice - periodOpen : null;
+    const changePct = changeAbs != null && periodOpen ? (changeAbs / periodOpen) * 100 : null;
+    const isPeriodUp = changeAbs != null ? changeAbs >= 0 : null;
 
     const periodHigh = chartData.length > 0 ? Math.max(...chartData.map(c => c.high)) : 0;
     const periodLow = chartData.length > 0 ? Math.min(...chartData.map(c => c.low)) : 0;
@@ -182,19 +206,32 @@ const SymbolLiveChart: React.FC<{ symbol: string; globalTick: MarketTick | null;
                     <h3 className="symbol-label">
                         {symbol} <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 'normal', fontFamily: 'var(--font-sans)' }}>{profile?.name ? `| ${profile.name}` : ''}</span>
                     </h3>
-                    {currentPrice && (
-                        <span key={currentPrice} className={`mono-data ${priceClass}`} style={{ fontSize: '1.4rem', fontWeight: 'bold', color: priceColor, borderRadius: '4px', padding: '0 4px' }}>
-                            ${currentPrice.toFixed(2)}
-                        </span>
+                    {!isLoading && currentPrice && (
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px' }}>
+                            <span key={currentPrice} className={`mono-data ${priceClass}`} style={{ fontSize: '1.4rem', fontWeight: 'bold', color: priceColor, borderRadius: '4px', padding: '0 4px' }}>
+                                ${currentPrice.toFixed(2)}
+                            </span>
+                            {changeAbs != null && changePct != null && (
+                                <span
+                                    className="mono-data"
+                                    style={{ fontSize: '0.85rem', color: isPeriodUp ? 'var(--trade-up-text)' : 'var(--trade-down-text)' }}
+                                    title={`Change since period open ($${periodOpen!.toFixed(2)})`}
+                                >
+                                    {isPeriodUp ? '▲' : '▼'} {Math.abs(changeAbs).toFixed(2)} ({Math.abs(changePct).toFixed(2)}%)
+                                </span>
+                            )}
+                        </div>
                     )}
                 </div>
-                {isLoading && <span className="status-badge" style={{ color: 'var(--status-warning)', borderColor: 'var(--status-warning)' }}>Loading Chart...</span>}
             </div>
             
             {/* Main Chart Rendering Area */}
             <div className="tv-canvas-container">
                 {isLoading ? (
-                    <div className="empty-state">Aggregating Market Data...</div>
+                    <div className="empty-state terminal-panel" style={{ height: '100%' }}>
+                        <div className="skeleton-box" style={{ width: '280px', height: '4px', marginBottom: 'var(--space-md)' }} />
+                        <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>Loading {symbol} · {timeframe.toUpperCase()} candles…</span>
+                    </div>
                 ) : error ? (
                     <div className="empty-state" style={{ color: 'var(--status-offline)' }}>⚠️ {error}</div>
                 ) : (
@@ -231,7 +268,13 @@ const SymbolLiveChart: React.FC<{ symbol: string; globalTick: MarketTick | null;
  */
 const LiveDashboard: React.FC = () => {
     // Manages the global market data stream. Ensure the backend endpoint port is correctly aligned (e.g., 8081).
-    const { tick, status } = useLiveMarketData("ws://localhost:8081/ws/market-data");
+    // CAVEAT: if useLiveMarketData only keeps the single most recently received message,
+    // subscribing to multiple symbols (e.g. AAPL + BTCUSDT, as in the watchlist) means each
+    // incoming message for one symbol overwrites the last-seen state for every other symbol,
+    // so a chatty symbol can starve a quieter one of live updates. For a multi-symbol
+    // watchlist, useLiveMarketData should track the latest message per-symbol (e.g. a
+    // Record<string, OHLCVCandle>) rather than a single shared value.
+    const { tick: liveCandle, status } = useLiveMarketData("ws://localhost:8081/ws/market-data");
     const { subscribedList, selectedSymbol, setSelectedSymbol, subscribe, unsubscribe } = useMarketSubscriptions();
     
     const [symbolInput, setSymbolInput] = useState<string>('');
@@ -301,6 +344,19 @@ const LiveDashboard: React.FC = () => {
                     <ConnectionStatus status={status} label="STREAM" />
                 </div>
 
+                {/* Connection Lost Overlay — mirrors the Monte Carlo page's SYSTEM FAULT banner
+                    so losing either backend connection reads the same way across the app. */}
+                {(status === 'ERROR' || status === 'DISCONNECTED') && (
+                    <div className="terminal-panel" style={{ padding: 'var(--space-md)', borderLeft: '4px solid var(--status-offline)' }}>
+                        <span style={{ color: 'var(--status-offline)', fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
+                            SYSTEM FAULT:
+                        </span>
+                        <span style={{ color: 'var(--text-secondary)', marginLeft: '8px' }}>
+                            Lost connection to the live market data stream. Prices below may be stale until it reconnects.
+                        </span>
+                    </div>
+                )}
+
                 {/* Dynamic Chart Container */}
                 <div style={{ flex: 1, overflow: 'hidden' }}>
                     {subscribedList.length === 0 ? (
@@ -310,7 +366,7 @@ const LiveDashboard: React.FC = () => {
                     ) : (
                         subscribedList.map((sym: string) => (
                             <div key={sym} style={{ display: sym === selectedSymbol ? 'block' : 'none', height: '100%' }}>
-                                <SymbolLiveChart symbol={sym} globalTick={tick} timeframe={globalTimeframe} />
+                                <SymbolLiveChart symbol={sym} globalCandle={liveCandle as any} timeframe={globalTimeframe} />
                             </div>
                         ))
                     )}
