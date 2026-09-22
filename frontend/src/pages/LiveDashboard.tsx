@@ -6,9 +6,16 @@ import TradingViewChart from '../charts/TradingViewCharts';
 import ConnectionStatus from '../components/ConnectionStatus';
 import type { MarketTick, OHLCVCandle } from '../types';
 
+/**
+ * Standardized timeframe intervals available for user selection.
+ */
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '1d'] as const;
 type Timeframe = typeof TIMEFRAMES[number];
 
+/**
+ * Mapping of timeframes to their respective millisecond durations.
+ * Critical for aligning real-time stream data into historical chart buckets.
+ */
 const INTERVAL_MS: Record<Timeframe, number> = {
     '1m': 60 * 1000,
     '5m': 5 * 60 * 1000,
@@ -17,6 +24,9 @@ const INTERVAL_MS: Record<Timeframe, number> = {
     '1d': 24 * 60 * 60 * 1000
 };
 
+/**
+ * Represents fundamental institutional data fetched from the backend (Finnhub).
+ */
 interface AssetProfile {
     name?: string;
     sector?: string;
@@ -27,11 +37,24 @@ interface AssetProfile {
     dividendYield?: string;
 }
 
+/**
+ * SymbolLiveChart Component
+ * 
+ * Acts as a decoupled rendering layer. It receives historical data from the REST API,
+ * listens to real-time WebSocket updates, aligns the incoming data to the active timeframe,
+ * and seamlessly feeds it into the Lightweight Charts instance.
+ * 
+ * @param {string} symbol - The market ticker (e.g., "AAPL").
+ * @param {MarketTick | null} globalTick - The latest real-time tick received from the global stream.
+ * @param {Timeframe} timeframe - The currently selected chart interval.
+ */
 const SymbolLiveChart: React.FC<{ symbol: string; globalTick: MarketTick | null; timeframe: Timeframe }> = ({ symbol, globalTick, timeframe }) => {
     const [historicalCandles, setHistoricalCandles] = useState<OHLCVCandle[]>([]);
     const [profile, setProfile] = useState<AssetProfile | null>(null);
     const [isLoading, setIsLoading] = useState<boolean>(true);
     const [error, setError] = useState<string | null>(null);
+
+    const intervalMs = INTERVAL_MS[timeframe];
 
     useEffect(() => {
         const fetchData = async () => {
@@ -53,7 +76,12 @@ const SymbolLiveChart: React.FC<{ symbol: string; globalTick: MarketTick | null;
                 const profileData = profileRes && profileRes.ok ? await profileRes.json() : null;
 
                 if (chartData && chartData.length > 0) {
-                    setHistoricalCandles(chartData);
+                    // Format timestamps to Unix seconds strictly required by Lightweight Charts
+                    const formattedHistory = chartData.map((c: any) => ({
+                        ...c,
+                        time: Math.floor(c.time / 1000)
+                    }));
+                    setHistoricalCandles(formattedHistory);
                     setProfile(profileData);
                 } else {
                     setError(`Ticker '${symbol}' has no historical data.`);
@@ -68,58 +96,75 @@ const SymbolLiveChart: React.FC<{ symbol: string; globalTick: MarketTick | null;
         fetchData();
     }, [symbol, timeframe]);
 
+    // Integrate real-time WebSocket data routed to this specific symbol
     const displayedTick = globalTick?.symbol === symbol ? globalTick : null;
     const { candles, currentCandle } = useMarketCandles(displayedTick);
-
-    const intervalMs = INTERVAL_MS[timeframe];
     const liveCandles = currentCandle ? [...candles, currentCandle] : candles;
-    const rawChartData = [...historicalCandles, ...liveCandles];
-    const processChartData = (rawCandles: any[]) => {
-        const cleanMap = new Map();
-
-        rawCandles.forEach(candle => {
-            if (!candle || isNaN(candle.close) || candle.close <= 0) return;
-
-            const isFloatingDot = (candle.open === candle.close && candle.high === candle.low);
-            if (candle.volume <= 0 || isFloatingDot) return;
-
-            let ms = Number(candle.time);
-            if (ms < 1e11) ms *= 1000;
-            else if (ms > 1e15) ms /= 1e6;
+    
+    /**
+     * Merges historical data with live stream updates.
+     * Prevents floating dots (anomalies) by filtering out zero-volume and flatline events.
+     * Aligns 1-minute real-time backend updates to the currently selected chart interval (e.g., 1H, 1D).
+     * 
+     * @returns {OHLCVCandle[]} A chronologically sorted, collision-free array of candles.
+     */
+    const mergeData = () => {
+        const dataMap = new Map();
+        
+        // 1. Process Historical Data (Provides the baseline rendering structure)
+        historicalCandles.forEach(c => {
+            if (!c || isNaN(c.close) || c.close <= 0) return;
             
-            if (isNaN(ms) || ms <= 0) return;
+            // Safety measure against orphaned exchange trades outside active hours
+            const isFloating = c.open === c.close && c.high === c.low;
+            if (c.volume <= 0 || isFloating) return;
+            
+            dataMap.set(c.time, c);
+        });
+        
+        // 2. Process Live Data (Align backend candles to the UI timeframe)
+        liveCandles.forEach(c => {
+            if (!c || isNaN(c.close)) return;
 
-            const unixTimeSec = Math.floor((Math.floor(ms / intervalMs) * intervalMs) / 1000);
-
-            const existing = cleanMap.get(unixTimeSec);
+            // Normalize backend timestamp to milliseconds
+            let ms = Number(c.time);
+            if (ms < 1e11) ms *= 1000; 
+            
+            // Align the timestamp to the active timeframe bucket and convert to Unix seconds
+            const alignedSec = Math.floor((Math.floor(ms / intervalMs) * intervalMs) / 1000);
+            
+            const existing = dataMap.get(alignedSec);
             if (existing) {
-                cleanMap.set(unixTimeSec, {
-                    time: unixTimeSec as any,
-                    open: existing.open,
-                    high: Math.max(existing.high, candle.high),
-                    low: Math.min(existing.low, candle.low),
-                    close: candle.close,
-                    volume: existing.volume + candle.volume
+                // Upsert: Expand the High/Low bounds and accumulate volume within the active bucket
+                dataMap.set(alignedSec, {
+                    ...existing,
+                    high: Math.max(existing.high, c.high),
+                    low: Math.min(existing.low, c.low),
+                    close: c.close,
+                    volume: existing.volume + (c.volume || 0)
                 });
             } else {
-                cleanMap.set(unixTimeSec, {
-                    time: unixTimeSec as any,
-                    open: candle.open,
-                    high: candle.high,
-                    low: candle.low,
-                    close: candle.close,
-                    volume: candle.volume
+                // Initialize a new timeframe bucket for incoming real-time data
+                dataMap.set(alignedSec, {
+                    time: alignedSec as any,
+                    open: c.open,
+                    high: c.high,
+                    low: c.low,
+                    close: c.close,
+                    volume: c.volume || 0
                 });
             }
         });
 
-        return Array.from(cleanMap.values()).sort((a, b) => (a.time as number) - (b.time as number));
+        // 3. Guarantee strict chronological sorting to prevent rendering engine crashes
+        return Array.from(dataMap.values()).sort((a, b) => (a.time as number) - (b.time as number));
     };
 
-    const chartData = processChartData(rawChartData);
+    const chartData = mergeData();
+    
+    // Extract dynamic UI metrics for the top header and side panel
     const currentPrice = chartData.length > 0 ? chartData[chartData.length - 1].close : null;
     const previousPrice = chartData.length > 1 ? chartData[chartData.length - 2].close : null;
-
 
     const isPriceUp = currentPrice && previousPrice && currentPrice >= previousPrice;
     const priceClass = isPriceUp ? 'flash-up' : 'flash-down';
@@ -146,7 +191,7 @@ const SymbolLiveChart: React.FC<{ symbol: string; globalTick: MarketTick | null;
                 {isLoading && <span className="status-badge" style={{ color: 'var(--status-warning)', borderColor: 'var(--status-warning)' }}>Loading Chart...</span>}
             </div>
             
-            {/* Chart Area */}
+            {/* Main Chart Rendering Area */}
             <div className="tv-canvas-container">
                 {isLoading ? (
                     <div className="empty-state">Aggregating Market Data...</div>
@@ -157,7 +202,7 @@ const SymbolLiveChart: React.FC<{ symbol: string; globalTick: MarketTick | null;
                 )}
             </div>
 
-            {/* Asset Profile Panel */}
+            {/* Asset Fundamental Profile Panel */}
             {!isLoading && !error && chartData.length > 0 && profile && (
                 <div style={{ borderTop: '1px solid var(--border-subtle)', flexShrink: 0 }}>
                     <div className="metric-card-container">
@@ -178,16 +223,24 @@ const SymbolLiveChart: React.FC<{ symbol: string; globalTick: MarketTick | null;
     );
 };
 
+/**
+ * LiveDashboard Component
+ * 
+ * The primary layout architecture for the trading terminal. Manages the global 
+ * WebSocket connection, user subscriptions (Watchlist), and global timeframe selections.
+ */
 const LiveDashboard: React.FC = () => {
-    const { tick, status } = useLiveMarketData("ws://localhost:8000/ws/live");
+    // Manages the global market data stream. Ensure the backend endpoint port is correctly aligned (e.g., 8081).
+    const { tick, status } = useLiveMarketData("ws://localhost:8081/ws/market-data");
     const { subscribedList, selectedSymbol, setSelectedSymbol, subscribe, unsubscribe } = useMarketSubscriptions();
+    
     const [symbolInput, setSymbolInput] = useState<string>('');
     const [globalTimeframe, setGlobalTimeframe] = useState<Timeframe>('1d');
 
     return (
         <div className="dashboard-grid-layout fade-in">
             
-            {/* Left Sidebar: Watchlist & Search */}
+            {/* Sidebar Navigation: Watchlist & Search Module */}
             <aside className="sidebar-panel">
                 <h2 className="sidebar-title">Live Market Data</h2>
                 
@@ -229,9 +282,9 @@ const LiveDashboard: React.FC = () => {
                 </div>
             </aside>
 
-            {/* Main Area: Toolbar & Chart */}
+            {/* Main Content Area: Action Toolbar & Charting Engine */}
             <main className="main-panel">
-                {/* Top Toolbar */}
+                {/* Global Actions Toolbar */}
                 <div className="toolbar">
                     <div className="chart-toggle-group">
                         {TIMEFRAMES.map(tf => (
@@ -244,11 +297,11 @@ const LiveDashboard: React.FC = () => {
                             </button>
                         ))}
                     </div>
-                    {/* Connection Status Hooked Directly to the Stream */}
+                    {/* Real-time Connection Status Indicator */}
                     <ConnectionStatus status={status} label="STREAM" />
                 </div>
 
-                {/* Active Chart Display */}
+                {/* Dynamic Chart Container */}
                 <div style={{ flex: 1, overflow: 'hidden' }}>
                     {subscribedList.length === 0 ? (
                         <div className="empty-state terminal-panel">

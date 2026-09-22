@@ -12,3 +12,8 @@ alpaca:
   api:
     key: PKHKALICCQI2J2ARBCOEE4FFDB
     secret: APD2dZFk9nbNhhY6Cx3ce723caPtsyypQu66zAjuxhby
+
+
+finnhub:
+  api:
+    key: dancl6pr01qr00orehngdancl6pr01qr00oreho0

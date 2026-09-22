@@ -1,5 +1,6 @@
 package com.avraham.trading.services;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -15,17 +16,20 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Service responsible for fetching fundamental asset data and corporate profiles.
- * Integrates dynamically with Yahoo Finance API using aggressive browser spoofing 
- * to bypass WAF restrictions, with a generic fallback for all symbols.
+ * Integrates cleanly with Finnhub API, eliminating the need for WAF bypasses or browser spoofing.
  */
 @Service
 public class AssetProfileService {
 
     private static final Logger logger = LoggerFactory.getLogger(AssetProfileService.class);
     
-    // query2 is generally more permissive for headless clients than query1
-    private static final String YAHOO_FINANCE_BASE_URL = "https://query2.finance.yahoo.com/v10/finance/quoteSummary/";
-    private static final String YAHOO_MODULES = "?modules=assetProfile,price,summaryDetail,defaultKeyStatistics";
+    // Finnhub endpoints
+    private static final String FINNHUB_BASE_URL = "https://finnhub.io/api/v1";
+    private static final String PROFILE_ENDPOINT = "/stock/profile2?symbol=%s";
+    private static final String METRICS_ENDPOINT = "/stock/metric?symbol=%s&metric=all";
+
+    @Value("${finnhub.api.key:}") // Falls back to empty string if not defined
+    private String apiKey;
 
     private final HttpClient httpClient;
     private final ObjectMapper mapper;
@@ -38,78 +42,110 @@ public class AssetProfileService {
     }
 
     public Map<String, String> getAssetProfile(String symbol) {
-        Map<String, String> profile = new HashMap<>();
-        
-        // Format Crypto symbols correctly for Yahoo (e.g., BTCUSDT -> BTC-USD)
-        String querySymbol = symbol.endsWith("USDT") ? symbol.replace("USDT", "-USD") : symbol;
-        String url = YAHOO_FINANCE_BASE_URL + querySymbol + YAHOO_MODULES;
+        // Fallback instantly if no API key is configured
+        if (apiKey == null || apiKey.trim().isEmpty()) {
+            logger.warn("[-] Finnhub API Key is missing. Using generic fallback for {}", symbol);
+            return getGenericFallbackProfile(symbol);
+        }
 
+        Map<String, String> profile = new HashMap<>();
+        String querySymbol = symbol.toUpperCase();
+        
         try {
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    // Aggressive browser spoofing to bypass Cloudflare/Yahoo Anti-Bot
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-                    .header("Accept", "application/json, text/plain, */*")
-                    .header("Accept-Language", "en-US,en;q=0.9")
-                    .header("Origin", "https://finance.yahoo.com")
-                    .header("Referer", "https://finance.yahoo.com/quote/" + querySymbol)
+            // 1. Fetch Company Profile (Name, Sector, Market Cap)
+            String profileUrl = String.format(FINNHUB_BASE_URL + PROFILE_ENDPOINT, querySymbol);
+            HttpRequest profileRequest = HttpRequest.newBuilder()
+                    .uri(URI.create(profileUrl))
+                    .header("X-Finnhub-Token", apiKey)
                     .GET()
                     .build();
 
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> profileResponse = httpClient.send(profileRequest, HttpResponse.BodyHandlers.ofString());
             
-            if (response.statusCode() == 200) {
-                JsonNode root = mapper.readTree(response.body());
-                JsonNode result = root.path("quoteSummary").path("result").get(0);
+            if (profileResponse.statusCode() == 200) {
+                JsonNode pNode = mapper.readTree(profileResponse.body());
                 
-                if (result != null && !result.isMissingNode()) {
-                    JsonNode assetProfile = result.path("assetProfile");
-                    JsonNode price = result.path("price");
-                    JsonNode summaryDetail = result.path("summaryDetail");
-
-                    profile.put("name", price.path("shortName").asText(symbol));
-                    profile.put("sector", assetProfile.path("sector").asText("N/A"));
-                    profile.put("description", assetProfile.path("longBusinessSummary").asText("No corporate description available."));
-                    
-                    // Safely extract formatted metrics
-                    profile.put("marketCap", extractYahooMetric(price, "marketCap"));
-                    profile.put("trailingPE", extractYahooMetric(summaryDetail, "trailingPE"));
-                    profile.put("beta", extractYahooMetric(summaryDetail, "beta"));
-                    profile.put("dividendYield", extractYahooMetric(summaryDetail, "dividendYield"));
-                    
-                    return profile;
+                // If Finnhub returns an empty object, it means the symbol is invalid/crypto
+                if (pNode.isEmpty()) {
+                    return getGenericFallbackProfile(symbol);
                 }
-            } else {
-                logger.warn("[-] Yahoo API returned status {} for symbol {}", response.statusCode(), symbol);
+
+                profile.put("name", pNode.path("name").asText(symbol));
+                profile.put("sector", pNode.path("finnhubIndustry").asText("N/A"));
+                
+                // Format Market Cap (Finnhub returns in Millions)
+                double mcapMillions = pNode.path("marketCapitalization").asDouble(0);
+                profile.put("marketCap", formatMarketCap(mcapMillions));
+                
+                // Note: Finnhub free tier doesn't provide long business descriptions, 
+                // so we use a clean default message.
+                profile.put("description", pNode.path("name").asText(symbol) + " operates within the " + 
+                            pNode.path("finnhubIndustry").asText("financial") + " sector.");
             }
+
+            // 2. Fetch Basic Metrics (P/E, Beta, Dividend)
+            String metricsUrl = String.format(FINNHUB_BASE_URL + METRICS_ENDPOINT, querySymbol);
+            HttpRequest metricsRequest = HttpRequest.newBuilder()
+                    .uri(URI.create(metricsUrl))
+                    .header("X-Finnhub-Token", apiKey)
+                    .GET()
+                    .build();
+                    
+            HttpResponse<String> metricsResponse = httpClient.send(metricsRequest, HttpResponse.BodyHandlers.ofString());
+
+            if (metricsResponse.statusCode() == 200) {
+                JsonNode mNode = mapper.readTree(metricsResponse.body());
+                JsonNode metricData = mNode.path("metric");
+                
+                if (!metricData.isMissingNode()) {
+                    profile.put("trailingPE", extractMetric(metricData, "peNormalizedAnnual"));
+                    profile.put("beta", extractMetric(metricData, "beta"));
+                    
+                    double divYield = metricData.path("dividendYieldIndicatedAnnual").asDouble(0);
+                    profile.put("dividendYield", divYield > 0 ? String.format("%.2f%%", divYield) : "N/A");
+                }
+            }
+            
+            return profile;
+
         } catch (Exception e) {
-            logger.error("[-] Error fetching Yahoo data for {}: {}", symbol, e.getMessage());
+            logger.error("[-] Error fetching Finnhub data for {}: {}", symbol, e.getMessage());
         }
         
-        // Dynamic fallback triggered if API fails or symbol is invalid
         return getGenericFallbackProfile(symbol);
     }
 
     /**
-     * Safely extracts the "fmt" (formatted string) from Yahoo's nested JSON structure.
+     * Extracts a numeric metric safely and formats it as a string.
      */
-    private String extractYahooMetric(JsonNode parentNode, String fieldName) {
-        JsonNode field = parentNode.path(fieldName);
-        if (field.isMissingNode() || field.isNull() || field.isEmpty()) {
-            return "N/A";
+    private String extractMetric(JsonNode node, String field) {
+        if (node.has(field) && !node.get(field).isNull()) {
+            return String.format("%.2f", node.get(field).asDouble());
         }
-        return field.path("fmt").asText("N/A");
+        return "N/A";
+    }
+    
+    /**
+     * Converts market cap from millions to a readable string (B or T).
+     */
+    private String formatMarketCap(double millions) {
+        if (millions <= 0) return "N/A";
+        if (millions >= 1_000_000) {
+            return String.format("%.2fT", millions / 1_000_000);
+        } else if (millions >= 1_000) {
+            return String.format("%.2fB", millions / 1_000);
+        }
+        return String.format("%.2fM", millions);
     }
 
     /**
-     * A generic, dynamic fallback that handles ANY requested symbol 
-     * without needing hardcoded switch-cases.
+     * A generic, dynamic fallback that handles any requested symbol if the API fails.
      */
     private Map<String, String> getGenericFallbackProfile(String symbol) {
         Map<String, String> fallback = new HashMap<>();
         fallback.put("name", symbol + " (Data Offline)");
         fallback.put("sector", "N/A");
-        fallback.put("description", "Fundamental data is currently unavailable from the provider. Market pricing and real-time quantitative metrics remain fully active via streaming.");
+        fallback.put("description", "Fundamental data is currently unavailable. Market pricing and real-time metrics remain fully active via streaming.");
         fallback.put("marketCap", "N/A");
         fallback.put("trailingPE", "N/A");
         fallback.put("beta", "N/A");
