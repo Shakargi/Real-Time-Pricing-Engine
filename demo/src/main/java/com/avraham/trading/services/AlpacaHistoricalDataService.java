@@ -133,7 +133,7 @@ public class AlpacaHistoricalDataService {
         LocalDate startDate;
         switch(interval) {
             case "1d":
-                startDate = LocalDate.now().minusYears(2);
+                startDate = LocalDate.now().minusYears(1);
                 break;
             case "1h":
                 startDate = LocalDate.now().minusMonths(4);
