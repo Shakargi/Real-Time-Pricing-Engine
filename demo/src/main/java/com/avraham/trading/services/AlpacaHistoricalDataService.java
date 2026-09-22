@@ -150,8 +150,11 @@ public class AlpacaHistoricalDataService {
                 break;
         }
         
-        String url = String.format("https://data.alpaca.markets/v2/stocks/%s/bars?timeframe=%s&limit=10000&start=%s&feed=iex", 
-                           symbol, alpacaTimeframe, startDate.toString());
+        String startParam = startDate.toString() + "T00:00:00Z";
+        String endParam = Instant.now().toString();
+        
+        String url = String.format("https://data.alpaca.markets/v2/stocks/%s/bars?timeframe=%s&limit=10000&start=%s&end=%s&feed=iex", 
+                           symbol, alpacaTimeframe, startParam, endParam);
         
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
