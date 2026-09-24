@@ -10,6 +10,7 @@ import java.util.concurrent.ExecutionException;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -18,6 +19,7 @@ import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import com.avraham.trading.model.MarketTick;
+import com.avraham.trading.model.OHLCVCandleDTO;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -25,64 +27,54 @@ import jakarta.annotation.PostConstruct;
 
 /**
  * Service responsible for managing the real-time WebSocket connection to the Binance cryptocurrency market stream.
- * It handles dynamic subscriptions, automatic reconnections, and parses raw trade payloads
- * to publish them to the central Kafka pipeline with rate-limiting (throttling).
- * Implements the {@link MarketStreamProvider} interface to act as a strategy for crypto routing.
+ * It handles dynamic subscriptions, automatic reconnections, and parses raw trade payloads.
+ *
+ * Architectural split (mirrors AlpacaLiveStreamService):
+ * 1. Raw ticks -> throttled and published to Kafka for the C++ Quant Engine.
+ * 2. Aggregated 1-minute OHLCV candles -> broadcast over STOMP to /topic/market/{symbol} for React.
  */
 @Service
 public class BinanceLiveStreamService implements MarketStreamProvider {
 
-    // Kafka topic where the market data will be published
     private static final String TOPIC = "market_ticks";
-    
-    // Base URL for Binance's raw WebSocket streams
-    private static final String BINANCE_WS_URL = "wss://stream.binance.com:9443/ws"; 
+    private static final String BINANCE_WS_URL = "wss://stream.binance.com:9443/ws";
 
     @Autowired
     private KafkaTemplate<String, MarketTick> kafkaTemplate;
 
-    // State management: Thread-safe set to track active crypto subscriptions for reconnection handling
-    private final Set<String> activeSymbols = Collections.synchronizedSet(new HashSet<>());
-    
-    // Throttling state: Tracks the last time a tick was sent to Kafka for each symbol
-    private final Map<String, Long> lastSentTimes = new ConcurrentHashMap<>();
-    
-    // The desired rate limit in milliseconds (1000ms = 1 tick per second max)
-    private static final long THROTTLE_MS = 1000;
-    
-    // The active WebSocket session
-    private WebSocketSession activeSession;
-    
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    // Pushes ready-made candles to the frontend
+    @Autowired
+    private SimpMessagingTemplate messagingTemplate;
 
-    // Binance requires a unique ID for each subscription/unsubscription request
+    private final Set<String> activeSymbols = Collections.synchronizedSet(new HashSet<>());
+
+    // Throttling state (independent per destination)
+    private final Map<String, Long> lastKafkaSentTimes = new ConcurrentHashMap<>();
+    private final Map<String, Long> lastWsSentTimes = new ConcurrentHashMap<>();
+    private static final long THROTTLE_MS = 1000;
+
+    // Real-time candle aggregation state
+    private final Map<String, OHLCVCandleDTO> liveCandles = new ConcurrentHashMap<>();
+
+    private WebSocketSession activeSession;
+    private final ObjectMapper objectMapper = new ObjectMapper();
     private int requestIdCounter = 1;
 
-    /**
-     * Initializes the WebSocket connection immediately after the Spring bean is constructed.
-     */
     @PostConstruct
     public void connectToBinance() {
         startConnection();
     }
 
-    /**
-     * Establishes the WebSocket connection to Binance.
-     * Configures handlers to manage the connection lifecycle and process incoming market events.
-     */
     private void startConnection() {
         StandardWebSocketClient client = new StandardWebSocketClient();
-        
+
         try {
             client.execute(new TextWebSocketHandler() {
-                
+
                 @Override
                 public void afterConnectionEstablished(WebSocketSession session) throws IOException {
                     BinanceLiveStreamService.this.activeSession = session;
                     System.out.println("[+] Connected to Binance Live Market WebSocket");
-                    
-                    // Binance public streams do not require authentication, so we can immediately
-                    // restore previous subscriptions if this is a reconnection event.
                     resubscribeAll();
                 }
 
@@ -90,40 +82,17 @@ public class BinanceLiveStreamService implements MarketStreamProvider {
                 public void afterConnectionClosed(WebSocketSession session, CloseStatus status) throws Exception {
                     System.err.println("[-] Binance connection closed. Status: " + status + ". Attempting reconnect...");
                     BinanceLiveStreamService.this.activeSession = null;
-                    
-                    // Basic retry delay before attempting to reconnect
-                    Thread.sleep(5000); 
+                    Thread.sleep(5000);
                     startConnection();
                 }
 
                 @Override
                 protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
                     JsonNode rootNode = objectMapper.readTree(message.getPayload());
-                    
-                    // Filter out response messages (e.g., subscription confirmations) which lack the "e" (event) field.
-                    // We only process incoming "trade" events.
+
+                    // Subscription confirmations lack the "e" (event) field; only process trades.
                     if (rootNode.has("e") && "trade".equals(rootNode.get("e").asText())) {
-                        
-                        // Extract trade details based on Binance's JSON schema
-                        String symbol = rootNode.get("s").asText(); // "s": Symbol
-                        double price = rootNode.get("p").asDouble(); // "p": Price
-                        
-                        // Extract volume ("q": Quantity) and cast to integer to match our schema
-                        double rawVolume = rootNode.get("q").asDouble();
-                        int volume = (int) Math.round(rawVolume);
-
-                        long currentTime = System.currentTimeMillis();
-                        long lastSent = lastSentTimes.getOrDefault(symbol, 0L);
-
-                        // THROTTLING LOGIC: Only publish if at least THROTTLE_MS has passed since the last publish
-                        if (currentTime - lastSent >= THROTTLE_MS) {
-                            // Construct the unified MarketTick record and publish to Kafka.
-                            MarketTick tick = new MarketTick(symbol, price, volume, currentTime);
-                            kafkaTemplate.send(TOPIC, symbol, tick);
-                            
-                            // Update the last sent timestamp for this symbol
-                            lastSentTimes.put(symbol, currentTime);
-                        }
+                        processTradeEvent(rootNode);
                     }
                 }
             }, BINANCE_WS_URL).get();
@@ -133,36 +102,72 @@ public class BinanceLiveStreamService implements MarketStreamProvider {
     }
 
     /**
-     * Resubscribes to all cryptocurrency symbols currently held in the state.
-     * Essential for preventing data loss after unexpected network disconnections.
-     * 
-     * @throws IOException If sending the WebSocket message fails.
+     * Processes a single live trade event: routes the raw tick to Kafka and
+     * aggregates it into the current 1-minute candle for the UI.
      */
+    private void processTradeEvent(JsonNode node) {
+        String symbol = node.get("s").asText();      // "s": Symbol (uppercase, e.g. BTCUSDT)
+        double price = node.get("p").asDouble();     // "p": Price
+        double quantity = node.get("q").asDouble();  // "q": Quantity (kept as double for candle volume)
+
+        long currentServerTime = System.currentTimeMillis();
+        // "T": trade time in ms; fall back to server time if absent
+        long tickTimeMs = node.has("T") ? node.get("T").asLong() : currentServerTime;
+
+        // ==========================================
+        // 1. BACKEND ROUTE: raw ticks to Kafka (C++)
+        // ==========================================
+        long lastKafkaSent = lastKafkaSentTimes.getOrDefault(symbol, 0L);
+        if (currentServerTime - lastKafkaSent >= THROTTLE_MS) {
+            int volume = (int) Math.round(quantity);
+            MarketTick tick = new MarketTick(symbol, price, volume, currentServerTime);
+            kafkaTemplate.send(TOPIC, symbol, tick);
+            lastKafkaSentTimes.put(symbol, currentServerTime);
+        }
+
+        // ==========================================
+        // 2. FRONTEND ROUTE: OHLCV aggregation (React)
+        // ==========================================
+        long currentMinuteBucket = (tickTimeMs / 60000) * 60000;
+
+        liveCandles.compute(symbol, (key, existing) -> {
+            if (existing == null || existing.time() < currentMinuteBucket) {
+                return new OHLCVCandleDTO(currentMinuteBucket, price, price, price, price, quantity);
+            }
+            return new OHLCVCandleDTO(
+                existing.time(),
+                existing.open(),
+                Math.max(existing.high(), price),
+                Math.min(existing.low(), price),
+                price,
+                existing.volume() + quantity
+            );
+        });
+
+        long lastWsSent = lastWsSentTimes.getOrDefault(symbol, 0L);
+        if (currentServerTime - lastWsSent >= THROTTLE_MS) {
+            messagingTemplate.convertAndSend("/topic/market/" + symbol, liveCandles.get(symbol));
+            lastWsSentTimes.put(symbol, currentServerTime);
+        }
+    }
+
     private void resubscribeAll() throws IOException {
         if (activeSymbols.isEmpty() || activeSession == null || !activeSession.isOpen()) return;
-        
-        // Binance requires stream names in lowercase with the "@trade" suffix for raw trade streams
+
         String jsonParams = activeSymbols.stream()
                 .map(s -> "\"" + s.toLowerCase() + "@trade\"")
                 .collect(java.util.stream.Collectors.joining(","));
-        
-        // Construct the subscription payload with a unique incremental ID
+
         String subPayload = String.format("{\"method\": \"SUBSCRIBE\", \"params\": [%s], \"id\": %d}", jsonParams, requestIdCounter++);
         activeSession.sendMessage(new TextMessage(subPayload));
         System.out.println("[+] Resubscribed to active crypto trades: " + activeSymbols);
     }
 
-    /**
-     * Dynamically adds a new cryptocurrency pair to the active WebSocket stream.
-     *
-     * @param symbol The trading pair symbol to add (e.g., "BTCUSDT").
-     */
     @Override
     public void subscribeSymbol(String symbol) {
         String upperSymbol = symbol.toUpperCase();
-        
-        // Only trigger the API request if the symbol was not already being tracked
-        if (activeSymbols.add(upperSymbol)) { 
+
+        if (activeSymbols.add(upperSymbol)) {
             try {
                 if (this.activeSession != null && this.activeSession.isOpen()) {
                     String streamName = upperSymbol.toLowerCase() + "@trade";
@@ -176,17 +181,11 @@ public class BinanceLiveStreamService implements MarketStreamProvider {
         }
     }
 
-    /**
-     * Dynamically removes a cryptocurrency pair from the active WebSocket stream.
-     *
-     * @param symbol The trading pair symbol to remove.
-     */
     @Override
     public void unsubscribeSymbol(String symbol) {
         String upperSymbol = symbol.toUpperCase();
-        
-        // Only trigger the API request if the symbol was actually present in our tracked state
-        if (activeSymbols.remove(upperSymbol)) { 
+
+        if (activeSymbols.remove(upperSymbol)) {
             try {
                 if (this.activeSession != null && this.activeSession.isOpen()) {
                     String streamName = upperSymbol.toLowerCase() + "@trade";
@@ -194,23 +193,18 @@ public class BinanceLiveStreamService implements MarketStreamProvider {
                     this.activeSession.sendMessage(new TextMessage(unsubPayload));
                     System.out.println("[-] Unsubscribed from Binance: " + upperSymbol);
                 }
-                
-                // Cleanup the throttling map to prevent memory leaks over time
-                lastSentTimes.remove(upperSymbol);
-                
+
+                // Cleanup per-symbol state to prevent memory leaks
+                lastKafkaSentTimes.remove(upperSymbol);
+                lastWsSentTimes.remove(upperSymbol);
+                liveCandles.remove(upperSymbol);
+
             } catch (Exception e) {
                 System.err.println("[-] Failed to unsubscribe from " + upperSymbol + ": " + e.getMessage());
             }
         }
     }
 
-    /**
-     * Evaluates whether this service should handle the given symbol.
-     * Binance routes are identified by the presence of a stablecoin quote currency (e.g., "USDT").
-     *
-     * @param symbol The ticker symbol to check.
-     * @return true if the symbol represents a Binance crypto pair (ends with "USDT").
-     */
     @Override
     public boolean supports(String symbol) {
         return symbol != null && symbol.toUpperCase().endsWith("USDT");

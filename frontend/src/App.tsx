@@ -4,10 +4,10 @@ import Navbar from './components/NavBar';
 import LiveDashboard from './pages/LiveDashboard';
 import MonteCarloDashboard from './pages/MonteCarloDashboard';
 
-// ייבוא קבצי העיצוב הגלובליים בסדר היררכי
 import './index.css';
 import './App.css';
 import './styles/fintech-theme.css';
+import './styles/motion.css'
 
 const DashboardLayout: React.FC = () => {
   const location = useLocation();

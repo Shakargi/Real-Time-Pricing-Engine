@@ -39,6 +39,25 @@
   /* Typography Stacks */
   --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Roboto Mono', 'Courier New', monospace;
+
+  /* Spacing scale — PREVIOUSLY MISSING. Every var(--space-*) reference below
+     was resolving to nothing (an invalid custom property makes the whole
+     declaration drop), so gaps/padding across the app were silently
+     collapsing. Values chosen to match what was already hardcoded nearby
+     (e.g. .toolbar's 0.5rem/1rem, .workspace's 1rem) so nothing visually
+     jumps once these take effect — but double check paddings that used to
+     render as "0" against what you actually want now that they render. */
+  --space-xs: 0.25rem;
+  --space-sm: 0.5rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+
+  /* Radius scale — also PREVIOUSLY MISSING for the same reason. Values match
+     the hardcoded radii already used elsewhere in this file (4px / 8px) so
+     the newly-working rounded corners land where the rest of the UI expects. */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
   
   /* Z-Index Hierarchy */
   --z-base: 1;
@@ -55,6 +74,10 @@
 /* --------------------------------------------------------------------------
    Base & Resets
    -------------------------------------------------------------------------- */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
   padding: 0;
@@ -64,6 +87,15 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+}
+
+/* Visible keyboard-focus ring, app-wide. Previously no interactive element
+   (button, input aside from its border-color tweak, watchlist row) had any
+   focus indication at all — invisible to keyboard/screen-reader users. */
+:focus-visible {
+  outline: 2px solid var(--border-active);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
 }
 
 /* Native App Scrollbars */
@@ -173,9 +205,9 @@ body {
   height: 2px;
   background-color: var(--border-focus);
   border-radius: 2px 2px 0 0;
-  transition: all 0.4s cubic-bezier(0.25, 1, 0.5, 1); /* חלקות תנועת הקו */
+  transition: all 0.4s cubic-bezier(0.25, 1, 0.5, 1); /* smooth indicator movement */
   z-index: 3;
-  box-shadow: 0 -2px 8px rgba(41, 98, 255, 0.5); /* אפקט זוהר מינימלי לקו */
+  box-shadow: 0 -2px 8px rgba(41, 98, 255, 0.5); /* minimal glow effect on the line */
 }
 
 /* --------------------------------------------------------------------------
@@ -223,13 +255,11 @@ body {
   flex-direction: column;
 }
 
-.dashboard-grid-layout {
-  display: grid;
-  grid-template-columns: 480px 1fr;
-  gap: 1rem;
-  height: 100%;
-  overflow: hidden;
-}
+/* NOTE: the old duplicate .dashboard-grid-layout block that used to live here
+   (480px 1fr, gap: 1rem) has been removed — it was fully dead code, silently
+   overridden by the later definition under "Sidebar & Watchlist" below. Keep
+   only one definition of this class to avoid a future merge accidentally
+   "fixing" the wrong copy. */
 
 /* --------------------------------------------------------------------------
    High-Performance Data Grid (Order Book / Watchlist style)

@@ -1,0 +1,57 @@
+/* ==========================================================================
+   Supplementary motion additions — import AFTER fintech-theme.css.
+
+   These build on the theme's own animation language rather than duplicating
+   it: entrances reuse the existing `fadeSlideUp` keyframe and `--ease-spring`
+   token (see .tab-transition-wrapper in fintech-theme.css), and per-tick
+   price feedback stays on the theme's own `.flash-up` / `.flash-down`
+   (GPU-accelerated, already wired to --trade-up-text / --trade-down-text).
+   This file only adds what genuinely wasn't there.
+   ========================================================================== */
+
+/* Entrance for a panel/row that just received real data. Key the element
+   (e.g. key={symbol} or key={data.symbol}) so React remounts it once per
+   real change, not on every re-render. */
+.reveal {
+    animation: fadeSlideUp 0.3s var(--ease-spring) both;
+}
+/* Small stagger for a couple of sibling panels revealed together (fan chart
+   + histogram landing side by side) — one orchestrated moment, two steps. */
+.reveal-delay-1 { animation-delay: 70ms; }
+.reveal-delay-2 { animation-delay: 130ms; }
+
+/* A KPI number landing for the first time (e.g. after useCountUp finishes).
+   Distinct from .flash-up/.flash-down: this marks "a new value is here",
+   not "the live tick moved" — use the theme's flash classes for the latter. */
+@keyframes valuePop {
+    0%   { transform: scale(1); }
+    35%  { transform: scale(1.05); }
+    100% { transform: scale(1); }
+}
+.value-pop {
+    animation: valuePop 240ms ease-out;
+}
+
+/* Give the timeframe toggle's active state real presence using the theme's
+   actual accent token (--border-active: #38bdf8) instead of the low-contrast
+   --border-subtle it ships with. Same selector as fintech-theme.css, loaded
+   after it, so this simply overrides the color — no extra markup, and it
+   animates for free via the theme's existing `.toggle-btn { transition: all
+   0.2s var(--ease-smooth); }`. */
+.toggle-btn.active {
+    background-color: rgba(56, 189, 248, 0.16); /* var(--border-active) at low alpha */
+    box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.4);
+    color: var(--text-primary);
+}
+
+.tabular-nums {
+    font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .reveal,
+    .value-pop {
+        animation: none !important;
+        transition: none !important;
+    }
+}

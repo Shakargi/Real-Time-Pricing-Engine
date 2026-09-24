@@ -3,6 +3,9 @@ import { useMonteCarloData } from '../hooks/useMonteCarloData';
 import FanChart from '../charts/FanChart';
 import DistributionHistogram from '../charts/DistributionHistogram';
 import ConnectionStatus from '../components/ConnectionStatus';
+import MetricCard from '../components/MetricCard';
+import ErrorBanner from '../components/ErrorBanner';
+import { useCountUp } from '../hooks/useCountUp';
 
 /**
  * Institutional Pre-Trade Monte Carlo Analysis Dashboard.
@@ -12,7 +15,6 @@ const MonteCarloDashboard: React.FC = () => {
     const [inputSymbol, setInputSymbol] = useState<string>('');
     const [isComputing, setIsComputing] = useState<boolean>(false);
 
-    // Engine WebSocket Connection
     const { data, status, requestSimulation } = useMonteCarloData("ws://localhost:8081/ws/monte-carlo");
 
     useEffect(() => {
@@ -28,31 +30,26 @@ const MonteCarloDashboard: React.FC = () => {
         }
     };
 
-    // Calculate approximate VaR/CVaR from FanChart bounds if backend doesn't explicitly send them
-    const renderRiskMetric = (label: string, value: string | number | undefined, isCurrency: boolean = false) => (
-        <div className="metric-card">
-            <span className="metric-label">{label}</span>
-            <span className={`metric-value ${value && typeof value === 'number' && value < 0 ? 'negative' : ''}`}>
-                {value === undefined ? '-' : `${isCurrency ? '$' : ''}${typeof value === 'number' ? value.toFixed(2) : value}`}
-            </span>
-        </div>
-    );
+    // Animate the headline numbers in when a run lands — this is the one
+    // orchestrated "reveal" moment on this page; nothing else here animates
+    // on its own.
+    const animatedPrice = useCountUp(data?.currentPrice);
+    const animatedPaths = useCountUp(data?.simulatedPaths);
 
     return (
         <div className="main-panel fade-in" style={{ height: '100%', padding: 'var(--space-md)' }}>
-            
-            {/* Control & Status Toolbar */}
+
             <header className="toolbar">
                 <div className="search-box" style={{ width: '350px' }}>
-                    <input 
-                        type="text" 
+                    <input
+                        type="text"
                         className="search-input"
-                        placeholder="Target Asset (e.g., TSLA)" 
+                        placeholder="Target Asset (e.g., TSLA)"
                         value={inputSymbol}
                         onChange={(e) => setInputSymbol(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && handleRunSimulation()}
                     />
-                    <button 
+                    <button
                         className="btn-primary"
                         onClick={handleRunSimulation}
                         disabled={isComputing || status !== 'CONNECTED'}
@@ -61,23 +58,17 @@ const MonteCarloDashboard: React.FC = () => {
                         {isComputing ? 'SIMULATING...' : 'RUN ENGINE'}
                     </button>
                 </div>
-                
+
                 <ConnectionStatus status={status} label="QUANT ENGINE" />
             </header>
 
-            {/* Error Overlay */}
             {(status === 'ERROR' || status === 'DISCONNECTED') && (
-                <div className="terminal-panel" style={{ padding: 'var(--space-md)', borderLeft: '4px solid var(--status-offline)' }}>
-                    <span style={{ color: 'var(--status-offline)', fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
-                        SYSTEM FAULT: 
-                    </span>
-                    <span style={{ color: 'var(--text-secondary)', marginLeft: '8px' }}>
-                        Lost connection to the quantitative pricing engine. Verify the backend WebSocket service is active.
-                    </span>
-                </div>
+                <ErrorBanner
+                    title="SYSTEM FAULT"
+                    message="Lost connection to the quantitative pricing engine. Verify the backend WebSocket service is active."
+                />
             )}
 
-            {/* Empty / Loading State */}
             {!data && !isComputing && status === 'CONNECTED' && (
                 <div className="empty-state terminal-panel" style={{ flex: 1 }}>
                     Enter an asset symbol to initiate a 10,000-path stochastic simulation.
@@ -91,37 +82,37 @@ const MonteCarloDashboard: React.FC = () => {
                 </div>
             )}
 
-            {/* Simulation Results Layout */}
             {data && !isComputing && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-md)', flex: 1, overflow: 'hidden' }}>
-                    
-                    {/* High-Visibility KPM Summary Cards */}
-                    <div className="metric-card-container terminal-panel" style={{ padding: 'var(--space-lg)', borderTop: 'none', borderLeft: '4px solid var(--border-active)' }}>
-                        {renderRiskMetric('Target Asset', data.symbol)}
-                        {renderRiskMetric('Initial Price (S0)', data.currentPrice, true)}
-                        {renderRiskMetric('Time to Maturity (T)', `${data.timeToMaturity} Y`)}
-                        {renderRiskMetric('Paths Simulated', data.simulatedPaths.toLocaleString())}
-                        {/* Compute these once, precisely, server-side from the full simulated path
-                            matrix (not approximated client-side from the already-binned fan chart
-                            display data) and add var95 / cvar95 to the WS payload. Falls back to
-                            '—' via renderRiskMetric until the backend sends them. */}
-                        {renderRiskMetric('VaR (95%)', (data as any).var95, true)}
-                        {renderRiskMetric('CVaR (95%)', (data as any).cvar95, true)}
+                <div key={data.symbol} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-md)', flex: 1, overflow: 'hidden' }}>
+
+                    <div className="metric-card-container terminal-panel reveal" style={{ padding: 'var(--space-lg)', borderTop: 'none', borderLeft: '4px solid var(--border-active)' }}>
+                        <MetricCard label="Target Asset" value={data.symbol} animateOnChange={false} />
+                        <MetricCard label="Initial Price (S0)" value={animatedPrice} isCurrency />
+                        <MetricCard label="Time to Maturity (T)" value={`${data.timeToMaturity} Y`} animateOnChange={false} />
+                        <MetricCard label="Paths Simulated" value={animatedPaths != null ? Math.round(animatedPaths).toLocaleString() : undefined} animateOnChange={false} />
+                        {/*
+                          Compute these once, precisely, server-side from the full simulated path
+                          matrix (not approximated client-side from the already-binned fan chart
+                          display data) and add var95 / cvar95 to the WS payload. Falls back to
+                          '—' via MetricCard until the backend sends them.
+                        */}
+                        <MetricCard label="VaR (95%)" value={(data as any).var95} isCurrency />
+                        <MetricCard label="CVaR (95%)" value={(data as any).cvar95} isCurrency />
                     </div>
 
-                    {/* Data Visualization Grid (Side-by-Side) */}
                     <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
                         Shaded band shows the 5th–95th percentile range across all simulated paths.
                     </p>
+
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-md)', flex: 1, minHeight: 0 }}>
-                        <div className="terminal-panel">
+                        <div className="terminal-panel reveal reveal-delay-1">
                             <FanChart data={data.fanChart} symbol={data.symbol} />
                         </div>
-                        <div className="terminal-panel">
+                        <div className="terminal-panel reveal reveal-delay-2">
                             <DistributionHistogram data={data.histogram} symbol={data.symbol} />
                         </div>
                     </div>
-                    
+
                 </div>
             )}
         </div>
