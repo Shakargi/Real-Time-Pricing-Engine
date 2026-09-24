@@ -130,6 +130,14 @@ public class BinanceLiveStreamService implements MarketStreamProvider {
         // ==========================================
         long currentMinuteBucket = (tickTimeMs / 60000) * 60000;
 
+        // Flush the just-completed candle immediately on rollover. The 1s throttle below can
+        // otherwise swallow a minute's final updates, leaving the client with a stale
+        // close/high/low/volume for that minute.
+        OHLCVCandleDTO previousCandle = liveCandles.get(symbol);
+        if (previousCandle != null && previousCandle.time() < currentMinuteBucket) {
+            messagingTemplate.convertAndSend("/topic/market/" + symbol, previousCandle);
+        }
+
         liveCandles.compute(symbol, (key, existing) -> {
             if (existing == null || existing.time() < currentMinuteBucket) {
                 return new OHLCVCandleDTO(currentMinuteBucket, price, price, price, price, quantity);

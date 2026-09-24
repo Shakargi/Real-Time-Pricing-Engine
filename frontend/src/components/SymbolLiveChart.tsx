@@ -1,8 +1,19 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import TradingViewChart from '../charts/TradingViewCharts';
 import MetricCard from './MetricCard';
 import { INTERVAL_MS, type Timeframe } from '../constants/timeframes';
 import type { OHLCVCandle } from '../types';
+import type { LiveCandle } from '../hooks/useLiveMarketData';
+
+const MINUTE_MS = 60_000;
+const DAY_SEC = 86_400;
+const MAX_LIVE_MINUTES = 2_880; // ~48h of 1-minute candles kept in memory
+
+/** The server may send epoch seconds or milliseconds; normalise to ms. */
+const toEpochMs = (t: unknown): number => {
+    const ms = Number(t);
+    return ms < 1e11 ? ms * 1000 : ms;
+};
 
 interface AssetProfile {
     name?: string;
@@ -42,6 +53,15 @@ const SymbolLiveChart: React.FC<SymbolLiveChartProps> = ({ symbol, globalCandle,
 
     const intervalMs = INTERVAL_MS[timeframe];
 
+    // Every 1-minute candle received live for this symbol, keyed by minute start (ms).
+    // The server re-sends the SAME minute repeatedly with cumulative OHLCV, so keying by
+    // minute means the newest message for a minute replaces the previous one, while
+    // completed minutes are retained (previously they vanished when the minute rolled over).
+    const [liveMinutes, setLiveMinutes] = useState<Record<number, LiveCandle>>({});
+    // When the REST snapshot was taken; used to avoid double-counting volume that is
+    // already inside the snapshot's most recent bar.
+    const snapshotAtMs = useRef<number>(0);
+
     useEffect(() => {
         const fetchData = async () => {
             try {
@@ -63,6 +83,7 @@ const SymbolLiveChart: React.FC<SymbolLiveChartProps> = ({ symbol, globalCandle,
 
                 const chartData = await chartRes.json();
                 const profileData = profileRes && profileRes.ok ? await profileRes.json() : null;
+                snapshotAtMs.current = Date.now();
 
                 if (chartData && chartData.length > 0) {
                     const formattedHistory = chartData.map((c: any) => ({
@@ -85,7 +106,6 @@ const SymbolLiveChart: React.FC<SymbolLiveChartProps> = ({ symbol, globalCandle,
     }, [symbol, timeframe]);
 
     const liveCandle = globalCandle && globalCandle.symbol === symbol ? globalCandle : null;
-    const liveCandles = liveCandle ? [liveCandle] : [];
 
     // Tracks whether ANY live candle has ever arrived for this symbol —
     // distinguishes "quiet right now" from "nothing is actively streaming this
@@ -96,49 +116,75 @@ const SymbolLiveChart: React.FC<SymbolLiveChartProps> = ({ symbol, globalCandle,
         if (liveCandle) hasReceivedLiveTick.current = true;
     }, [liveCandle]);
 
-    const mergeData = () => {
-        const dataMap = new Map();
+    // Accumulate live 1-minute candles (bounded) instead of keeping only the latest one.
+    useEffect(() => {
+        if (!liveCandle || isNaN(liveCandle.close)) return;
+        const minuteMs = Math.floor(toEpochMs(liveCandle.time) / MINUTE_MS) * MINUTE_MS;
+        setLiveMinutes(prev => {
+            const next = { ...prev, [minuteMs]: liveCandle };
+            const keys = Object.keys(next).map(Number);
+            if (keys.length > MAX_LIVE_MINUTES) {
+                keys.sort((a, b) => a - b)
+                    .slice(0, keys.length - MAX_LIVE_MINUTES)
+                    .forEach(k => delete next[k]);
+            }
+            return next;
+        });
+    }, [liveCandle]);
+
+    // Historical REST bars + live 1-minute candles re-aggregated into the selected
+    // timeframe. Because ALL live minutes are folded in (in time order), a forming
+    // 5m/15m/1h/1d bar keeps the highs, lows and volume of its earlier minutes and
+    // extends correctly as new minutes arrive.
+    const chartData = useMemo(() => {
+        const dataMap = new Map<number, any>();
 
         historicalCandles.forEach(c => {
             if (!c || isNaN(c.close) || c.close <= 0) return;
             const isFloating = c.open === c.close && c.high === c.low;
             if (c.volume <= 0 || isFloating) return;
-            dataMap.set(c.time, c);
+            dataMap.set(c.time as number, c);
         });
 
-        liveCandles.forEach(c => {
-            if (!c || isNaN(c.close)) return;
+        // The snapshot already contains trades up to ~snapshotAtMs. Minutes before that
+        // are already reflected in it; the minute containing it overlaps partially
+        // (use its price, skip its volume); later minutes are entirely new.
+        const cutoffMinute = Math.floor(snapshotAtMs.current / MINUTE_MS) * MINUTE_MS;
+        const liveOnlyBuckets = new Set<number>(); // buckets built purely from live data
 
-            let ms = Number(c.time);
-            if (ms < 1e11) ms *= 1000;
+        Object.keys(liveMinutes)
+            .map(Number)
+            .sort((a, b) => a - b)
+            .forEach(minuteMs => {
+                const c = liveMinutes[minuteMs];
+                const bucketSec = Math.floor((Math.floor(minuteMs / intervalMs) * intervalMs) / 1000);
+                const existing = dataMap.get(bucketSec);
 
-            const alignedSec = Math.floor((Math.floor(ms / intervalMs) * intervalMs) / 1000);
-            const existing = dataMap.get(alignedSec);
+                if (!existing) {
+                    dataMap.set(bucketSec, {
+                        time: bucketSec as any,
+                        open: c.open,
+                        high: c.high,
+                        low: c.low,
+                        close: c.close,
+                        volume: c.volume || 0
+                    });
+                    liveOnlyBuckets.add(bucketSec);
+                    return;
+                }
 
-            if (existing) {
-                dataMap.set(alignedSec, {
+                const liveOnly = liveOnlyBuckets.has(bucketSec);
+                dataMap.set(bucketSec, {
                     ...existing,
                     high: Math.max(existing.high, c.high),
                     low: Math.min(existing.low, c.low),
-                    close: c.close,
-                    volume: existing.volume + (c.volume || 0)
+                    close: liveOnly || minuteMs >= cutoffMinute ? c.close : existing.close,
+                    volume: existing.volume + (liveOnly || minuteMs > cutoffMinute ? (c.volume || 0) : 0)
                 });
-            } else {
-                dataMap.set(alignedSec, {
-                    time: alignedSec as any,
-                    open: c.open,
-                    high: c.high,
-                    low: c.low,
-                    close: c.close,
-                    volume: c.volume || 0
-                });
-            }
-        });
+            });
 
         return Array.from(dataMap.values()).sort((a, b) => (a.time as number) - (b.time as number));
-    };
-
-    const chartData = mergeData();
+    }, [historicalCandles, liveMinutes, intervalMs]);
 
     const currentPrice = chartData.length > 0 ? chartData[chartData.length - 1].close : null;
 
@@ -151,12 +197,23 @@ const SymbolLiveChart: React.FC<SymbolLiveChartProps> = ({ symbol, globalCandle,
     const isTickUp = currentPrice != null && previousPrice != null ? currentPrice >= previousPrice : null;
     const tickFlashClass = isTickUp === null ? '' : isTickUp ? 'flash-up' : 'flash-down';
 
-    // Change vs. the OPEN of the loaded period (not vs. the prior candle) — a stable
-    // reference that means the same thing regardless of which timeframe tab is active,
-    // and one we express with a glyph so direction isn't communicated by color alone.
-    const periodOpen = chartData.length > 0 ? chartData[0].open : null;
-    const changeAbs = currentPrice != null && periodOpen != null ? currentPrice - periodOpen : null;
-    const changePct = changeAbs != null && periodOpen ? (changeAbs / periodOpen) * 100 : null;
+    // Change vs. the close 24h before the latest bar. The previous reference
+    // (chartData[0].open) was the start of the whole REST window — potentially days
+    // before what's on screen — so the header could say "down" while the visible
+    // candles climbed. A rolling 24h reference is stable across timeframe tabs
+    // (on 1d it is the previous close) and is what exchanges display. If the loaded
+    // data spans less than 24h, fall back to the first bar's open.
+    const referencePrice = useMemo(() => {
+        if (chartData.length === 0) return null;
+        const cutoffSec = (chartData[chartData.length - 1].time as number) - DAY_SEC;
+        for (let i = chartData.length - 1; i >= 0; i--) {
+            if ((chartData[i].time as number) <= cutoffSec) return chartData[i].close as number;
+        }
+        return chartData[0].open as number;
+    }, [chartData]);
+
+    const changeAbs = currentPrice != null && referencePrice != null ? currentPrice - referencePrice : null;
+    const changePct = changeAbs != null && referencePrice ? (changeAbs / referencePrice) * 100 : null;
     const isPeriodUp = changeAbs != null ? changeAbs >= 0 : null;
 
     useEffect(() => {
@@ -185,7 +242,7 @@ const SymbolLiveChart: React.FC<SymbolLiveChartProps> = ({ symbol, globalCandle,
                                 <span
                                     className="mono-data tabular-nums"
                                     style={{ fontSize: '0.85rem', color: isPeriodUp ? 'var(--trade-up-text)' : 'var(--trade-down-text)' }}
-                                    title={`Change since period open ($${periodOpen!.toFixed(2)})`}
+                                    title={`24h change (vs. $${referencePrice!.toFixed(2)})`}
                                 >
                                     {isPeriodUp ? '▲' : '▼'} {Math.abs(changeAbs).toFixed(2)} ({Math.abs(changePct).toFixed(2)}%)
                                 </span>
