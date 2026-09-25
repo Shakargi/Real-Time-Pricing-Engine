@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 
 export const useMarketSubscriptions = () => {
     // 1. Initialize state from localStorage (if exists)
@@ -28,6 +28,26 @@ export const useMarketSubscriptions = () => {
     useEffect(() => {
         localStorage.setItem('active_subscriptions', JSON.stringify(subscribedList));
     }, [subscribedList]);
+
+    // Lets stable callbacks read the latest list without being re-created.
+    const listRef = useRef(subscribedList);
+    useEffect(() => { listRef.current = subscribedList; }, [subscribedList]);
+
+    /**
+     * Re-registers every watchlist symbol with the backend stream providers.
+     * The watchlist is restored from localStorage, but the server's subscriptions are
+     * in-memory only, so they are empty after a page load or a backend restart.
+     * Idempotent and does not trigger a history backfill.
+     */
+    const resyncStreams = useCallback(async () => {
+        await Promise.all(listRef.current.map(async (sym) => {
+            try {
+                await fetch(`http://localhost:8081/api/symbols/${sym}/stream`, { method: 'PUT' });
+            } catch (error) {
+                console.error(`[-] Failed to resync stream for ${sym}:`, error);
+            }
+        }));
+    }, []);
 
     const subscribe = useCallback(async (symbol: string) => {
         const upperSymbol = symbol.toUpperCase();
@@ -80,6 +100,7 @@ export const useMarketSubscriptions = () => {
         selectedSymbol,
         setSelectedSymbol,
         subscribe,
-        unsubscribe
+        unsubscribe,
+        resyncStreams
     };
 };

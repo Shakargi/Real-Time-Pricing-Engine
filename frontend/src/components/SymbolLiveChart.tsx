@@ -30,8 +30,6 @@ interface SymbolLiveChartProps {
     /** Latest live 1-minute candle for this symbol, delivered over the STOMP /topic/market/{symbol} subscription (see useLiveMarketData). Already fully aggregated server-side by AlpacaLiveStreamService/BinanceLiveStreamService. */
     globalCandle: (OHLCVCandle & { symbol: string }) | null;
     timeframe: Timeframe;
-    /** Reports the latest price/period-change up to the parent, so the watchlist row can show it without every row independently fetching. */
-    onPriceUpdate?: (symbol: string, price: number, changePct: number) => void;
 }
 
 /**
@@ -45,7 +43,7 @@ interface SymbolLiveChartProps {
  * anything from this specific endpoint), so this is consumed as-is rather
  * than re-aggregated from raw ticks.
  */
-const SymbolLiveChart: React.FC<SymbolLiveChartProps> = ({ symbol, globalCandle, timeframe, onPriceUpdate }) => {
+const SymbolLiveChart: React.FC<SymbolLiveChartProps> = ({ symbol, globalCandle, timeframe }) => {
     const [historicalCandles, setHistoricalCandles] = useState<OHLCVCandle[]>([]);
     const [profile, setProfile] = useState<AssetProfile | null>(null);
     const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -215,12 +213,6 @@ const SymbolLiveChart: React.FC<SymbolLiveChartProps> = ({ symbol, globalCandle,
     const changeAbs = currentPrice != null && referencePrice != null ? currentPrice - referencePrice : null;
     const changePct = changeAbs != null && referencePrice ? (changeAbs / referencePrice) * 100 : null;
     const isPeriodUp = changeAbs != null ? changeAbs >= 0 : null;
-
-    useEffect(() => {
-        if (currentPrice != null && changePct != null) {
-            onPriceUpdate?.(symbol, currentPrice, changePct);
-        }
-    }, [currentPrice, changePct, symbol, onPriceUpdate]);
 
     const periodHigh = chartData.length > 0 ? Math.max(...chartData.map(c => c.high)) : 0;
     const periodLow = chartData.length > 0 ? Math.min(...chartData.map(c => c.low)) : 0;

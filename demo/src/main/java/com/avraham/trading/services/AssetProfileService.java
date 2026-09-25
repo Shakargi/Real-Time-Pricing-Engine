@@ -11,6 +11,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -34,6 +35,12 @@ public class AssetProfileService {
     private final HttpClient httpClient;
     private final ObjectMapper mapper;
 
+    // The watchlist now requests a profile per symbol (for logos), and each profile costs 2 Finnhub
+    // calls against a 60/min free-tier limit, so successful lookups are cached.
+    private static final long PROFILE_TTL_MS = Duration.ofHours(24).toMillis();
+    private record CachedProfile(Map<String, String> profile, long fetchedAt) {}
+    private final Map<String, CachedProfile> profileCache = new ConcurrentHashMap<>();
+
     public AssetProfileService() {
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
@@ -42,6 +49,24 @@ public class AssetProfileService {
     }
 
     public Map<String, String> getAssetProfile(String symbol) {
+        String key = symbol.toUpperCase();
+        CachedProfile cached = profileCache.get(key);
+        if (cached != null && System.currentTimeMillis() - cached.fetchedAt() < PROFILE_TTL_MS) {
+            return new HashMap<>(cached.profile());
+        }
+
+        Map<String, String> fresh = fetchAssetProfile(symbol);
+
+        // Cache only complete results: "logo" exists only when the profile call succeeded and
+        // "beta" only when the metrics call did. Fallbacks and rate-limited (partial) results
+        // are not cached, so a transient failure isn't sticky.
+        if (fresh.containsKey("logo") && fresh.containsKey("beta")) {
+            profileCache.put(key, new CachedProfile(new HashMap<>(fresh), System.currentTimeMillis()));
+        }
+        return fresh;
+    }
+
+    private Map<String, String> fetchAssetProfile(String symbol) {
         // Fallback instantly if no API key is configured
         if (apiKey == null || apiKey.trim().isEmpty()) {
             logger.warn("[-] Finnhub API Key is missing. Using generic fallback for {}", symbol);
@@ -76,6 +101,7 @@ public class AssetProfileService {
                 // Format Market Cap (Finnhub returns in Millions)
                 double mcapMillions = pNode.path("marketCapitalization").asDouble(0);
                 profile.put("marketCap", formatMarketCap(mcapMillions));
+                profile.put("logo", pNode.path("logo").asText("")); // Finnhub-hosted logo URL (may be empty)
                 
                 // Note: Finnhub free tier doesn't provide long business descriptions, 
                 // so we use a clean default message.

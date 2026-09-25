@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -71,6 +72,26 @@ public class SymbolController {
         }
         
         return ResponseEntity.badRequest().body("Error: No suitable provider found to remove symbol " + upperSymbol);
+    }
+
+    /**
+     * Idempotent "make sure this symbol is streaming", with no history backfill.
+     * Provider subscriptions live in memory, so they are lost on a backend restart while the
+     * frontend still has the symbol in its (localStorage-backed) watchlist. The frontend calls
+     * this for every watchlist symbol whenever its live connection (re)establishes.
+     */
+    @PutMapping("/{symbol}/stream")
+    public ResponseEntity<String> ensureStreaming(@PathVariable String symbol) {
+        String upperSymbol = symbol.toUpperCase();
+
+        for (MarketStreamProvider provider : streamProviders) {
+            if (provider.supports(upperSymbol)) {
+                provider.subscribeSymbol(upperSymbol); // no-op if already subscribed
+                return ResponseEntity.ok("Streaming ensured for " + upperSymbol + " via " + provider.getClass().getSimpleName());
+            }
+        }
+
+        return ResponseEntity.badRequest().body("Error: No suitable provider found for symbol " + upperSymbol);
     }
 
     @GetMapping("/{symbol}/chart")

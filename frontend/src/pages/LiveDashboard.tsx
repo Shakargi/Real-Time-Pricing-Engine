@@ -1,6 +1,8 @@
-import React, { useCallback, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useLiveMarketData } from '../hooks/useLiveMarketData';
 import { useMarketSubscriptions } from '../hooks/useMarketSubscriptions';
+import { useSymbolLogos } from '../hooks/useSymbolLogos';
+import { useWatchlistPrices } from '../hooks/useWatchlistPrices';
 import SymbolLiveChart from '../components/SymbolLiveChart';
 import WatchlistItem from '../components/WatchlistItem';
 import ErrorBanner from '../components/ErrorBanner';
@@ -15,7 +17,8 @@ import { TIMEFRAMES, type Timeframe } from '../constants/timeframes';
  * symbol rendering lives in SymbolLiveChart; watchlist rows in WatchlistItem.
  */
 const LiveDashboard: React.FC = () => {
-    const { subscribedList, selectedSymbol, setSelectedSymbol, subscribe, unsubscribe } = useMarketSubscriptions();
+    const { subscribedList, selectedSymbol, setSelectedSymbol, subscribe, unsubscribe, resyncStreams } = useMarketSubscriptions();
+    const logos = useSymbolLogos(subscribedList);
 
     // Subscribes over STOMP to /topic/market/{selectedSymbol} specifically —
     // see useLiveMarketData for why this replaced the previous raw-WebSocket
@@ -23,19 +26,18 @@ const LiveDashboard: React.FC = () => {
     // endpoint despite looking "connected".
     const { candle: liveCandle, status } = useLiveMarketData("ws://localhost:8081/ws/market-data", selectedSymbol || null);
 
+    // Server-side subscriptions are in-memory, so they're empty after a backend restart or a
+    // fresh page load (the watchlist itself is restored from localStorage). Re-register every
+    // watchlist symbol each time the live connection (re)establishes.
+    useEffect(() => {
+        if (status === 'CONNECTED') resyncStreams();
+    }, [status, resyncStreams]);
+
     const [symbolInput, setSymbolInput] = useState<string>('');
     const [globalTimeframe, setGlobalTimeframe] = useState<Timeframe>('1d');
-    // Latest price/change per symbol, reported up by each SymbolLiveChart so the
-    // watchlist can show a live number without every row fetching independently.
-    const [prices, setPrices] = useState<Record<string, { price: number; changePct: number }>>({});
-
-    const handlePriceUpdate = useCallback((symbol: string, price: number, changePct: number) => {
-        setPrices(prev => {
-            const existing = prev[symbol];
-            if (existing && existing.price === price && existing.changePct === changePct) return prev;
-            return { ...prev, [symbol]: { price, changePct } };
-        });
-    }, []);
+    // Live price + rolling 1-minute change for every watchlist row, independent of the
+    // selected symbol's own STOMP connection above.
+    const prices = useWatchlistPrices("ws://localhost:8081/ws/market-data", subscribedList);
 
     const addSymbol = () => {
         if (!symbolInput) return;
@@ -73,8 +75,9 @@ const LiveDashboard: React.FC = () => {
                                 key={sym}
                                 symbol={sym}
                                 active={selectedSymbol === sym}
+                                logoUrl={logos[sym]}
                                 price={prices[sym]?.price}
-                                changePct={prices[sym]?.changePct}
+                                changePct={prices[sym]?.changePct ?? undefined}
                                 onSelect={() => setSelectedSymbol(sym)}
                                 onRemove={() => unsubscribe(sym)}
                             />
@@ -119,7 +122,6 @@ const LiveDashboard: React.FC = () => {
                             symbol={selectedSymbol}
                             globalCandle={liveCandle}
                             timeframe={globalTimeframe}
-                            onPriceUpdate={handlePriceUpdate}
                         />
                     ) : (
                         <div className="empty-state terminal-panel">
